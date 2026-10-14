@@ -1,0 +1,3 @@
+/target
+# Test identities (mnemonic databases) of the regtest users.
+/regtest/.state/

@@ -1,0 +1,95 @@
+# Local Mostro regtest network for exercising mostro-mcp end to end.
+#
+#   bitcoind (regtest) ── mostro_lnd ── mostrod ── nostr_relay ── host :7000
+#                     ├── alice_lnd   (Alice's wallet: pays hold invoices, makes invoices)
+#                     └── bob_lnd     (Bob's wallet)
+#
+# Everything here is a throwaway test fixture: regtest coins, a published test
+# key for the node, no mainnet anywhere. Drive it with ./devenv.sh.
+
+name: mostro-mcp-regtest
+
+x-lnd: &lnd
+  image: polarlightning/lnd:0.18.3-beta
+  restart: unless-stopped
+  depends_on:
+    bitcoin:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "lncli --network=regtest --lnddir=/home/lnd/.lnd --rpcserver=localhost:10009 getinfo"]
+    interval: 5s
+    timeout: 10s
+    retries: 30
+    start_period: 20s
+
+services:
+  bitcoin:
+    image: polarlightning/bitcoind:27.0
+    restart: unless-stopped
+    command: >-
+      bitcoind
+      -regtest=1 -server=1 -txindex=1 -listen=1 -dnsseed=0 -upnp=0 -listenonion=0
+      -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcport=18443
+      -rpcuser=bitcoin -rpcpassword=bitcoin
+      -zmqpubrawblock=tcp://0.0.0.0:28334 -zmqpubrawtx=tcp://0.0.0.0:28335
+      -fallbackfee=0.0002
+    healthcheck:
+      test: ["CMD-SHELL", "bitcoin-cli -regtest -rpcport=18443 -rpcuser=bitcoin -rpcpassword=bitcoin getblockchaininfo"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    volumes:
+      - bitcoin:/home/bitcoin/.bitcoin
+
+  mostro_lnd:
+    <<: *lnd
+    command: lnd --configfile=/etc/lnd/lnd.conf --alias=mostro_lnd --externalip=mostro_lnd --tlsextradomain=mostro_lnd
+    volumes:
+      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - mostro_lnd:/home/lnd/.lnd
+
+  alice_lnd:
+    <<: *lnd
+    command: lnd --configfile=/etc/lnd/lnd.conf --alias=alice_lnd --externalip=alice_lnd --tlsextradomain=alice_lnd
+    volumes:
+      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - alice_lnd:/home/lnd/.lnd
+
+  bob_lnd:
+    <<: *lnd
+    command: lnd --configfile=/etc/lnd/lnd.conf --alias=bob_lnd --externalip=bob_lnd --tlsextradomain=bob_lnd
+    volumes:
+      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - bob_lnd:/home/lnd/.lnd
+
+  nostr_relay:
+    image: scsibug/nostr-rs-relay:0.9.0
+    restart: unless-stopped
+    ports:
+      - "${MOSTRO_RELAY_PORT:-7000}:8080"
+    volumes:
+      - ./relay/config.toml:/usr/src/app/config.toml:ro
+      - relay_db:/usr/src/app/db
+
+  mostrod:
+    build:
+      context: ./mostrod
+    restart: unless-stopped
+    depends_on:
+      mostro_lnd:
+        condition: service_healthy
+      nostr_relay:
+        condition: service_started
+    volumes:
+      - ./mostrod/settings.toml:/config/settings.toml:ro
+      - mostrod_data:/data
+      # The node's LND credentials (tls.cert, admin.macaroon), read-only.
+      - mostro_lnd:/lnd:ro
+
+volumes:
+  bitcoin:
+  mostro_lnd:
+  alice_lnd:
+  bob_lnd:
+  relay_db:
+  mostrod_data:

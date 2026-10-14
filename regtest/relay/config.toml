@@ -1,0 +1,14 @@
+# nostr-rs-relay for the regtest network. Reached as ws://nostr_relay:8080
+# inside compose and ws://localhost:${MOSTRO_RELAY_PORT:-7000} from the host.
+
+[info]
+relay_url = "ws://localhost:7000/"
+name = "mostro-mcp-regtest"
+description = "Throwaway relay for the mostro-mcp regtest network."
+
+[network]
+address = "0.0.0.0"
+port = 8080
+
+[options]
+reject_future_seconds = 1800
