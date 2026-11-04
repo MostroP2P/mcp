@@ -1,4 +1,4 @@
-//! `create_order` → `mostro-cli neworder`: publish a new buy or sell order.
+//! `create_order` → `mostro-cli order new --yes`: publish a new buy or sell order.
 //! State-changing: refused unless the server runs with writes enabled.
 
 use schemars::JsonSchema;
@@ -52,12 +52,12 @@ pub struct CreateOrderParams {
 }
 
 pub fn args(params: &CreateOrderParams) -> Result<Vec<String>> {
-    let fiat_amount = match (
+    let (fiat_amount, fiat_amount_max) = match (
         params.fiat_amount,
         params.fiat_amount_min,
         params.fiat_amount_max,
     ) {
-        (Some(amount), None, None) => positive("fiat_amount", amount)?.to_string(),
+        (Some(amount), None, None) => (positive("fiat_amount", amount)?.to_string(), None),
         (None, Some(min), Some(max)) => {
             positive("fiat_amount_min", min)?;
             positive("fiat_amount_max", max)?;
@@ -67,7 +67,7 @@ pub fn args(params: &CreateOrderParams) -> Result<Vec<String>> {
                     format!("must be greater than fiat_amount_min ({min})"),
                 ));
             }
-            format!("{min}-{max}")
+            (min.to_string(), Some(max.to_string()))
         }
         _ => {
             return Err(invalid(
@@ -83,22 +83,34 @@ pub fn args(params: &CreateOrderParams) -> Result<Vec<String>> {
         ));
     }
 
+    let sats = params.amount_sats.filter(|&sats| sats > 0);
+    if fiat_amount_max.is_some() && sats.is_some() {
+        return Err(invalid(
+            "amount_sats",
+            "a range order is priced at market: leave amount_sats out",
+        ));
+    }
+
     let mut args = vec![
-        "neworder".to_string(),
-        flag("kind", params.kind.as_cli()),
-        flag("fiatcode", fiat_code("fiat_code", &params.fiat_code)?),
-        flag("fiatamount", fiat_amount),
-        flag(
-            "paymentmethod",
-            text(
-                "payment_method",
-                &params.payment_method,
-                MAX_PAYMENT_METHOD_CHARS,
-            )?,
-        ),
+        "order".to_string(),
+        "new".to_string(),
+        flag("side", params.kind.as_cli()),
+        flag("currency", fiat_code("fiat_code", &params.fiat_code)?),
+        flag("fiat-amount", fiat_amount),
     ];
-    if let Some(sats) = params.amount_sats.filter(|&sats| sats > 0) {
-        args.push(flag("amount", positive("amount_sats", sats)?));
+    if let Some(max) = fiat_amount_max {
+        args.push(flag("fiat-amount-max", max));
+    }
+    args.push(flag(
+        "payment-method",
+        text(
+            "payment_method",
+            &params.payment_method,
+            MAX_PAYMENT_METHOD_CHARS,
+        )?,
+    ));
+    if let Some(sats) = sats {
+        args.push(flag("sats", positive("amount_sats", sats)?));
     }
     if let Some(premium) = params.premium.filter(|&premium| premium != 0) {
         if premium <= MIN_PREMIUM {
@@ -116,8 +128,9 @@ pub fn args(params: &CreateOrderParams) -> Result<Vec<String>> {
         args.push(flag("invoice", invoice("invoice", value)?));
     }
     if let Some(days) = params.expiration_days.filter(|&days| days > 0) {
-        args.push(flag("expirationdays", days));
+        args.push(flag("expiration-days", days));
     }
+    args.push("--yes".to_string());
     Ok(args)
 }
 
@@ -141,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_order_maps_to_neworder_flags() {
+    fn a_fixed_order_maps_to_order_new_flags() {
         let params = CreateOrderParams {
             amount_sats: Some(10_000),
             ..sell(10)
@@ -149,12 +162,14 @@ mod tests {
         assert_eq!(
             args(&params).unwrap(),
             [
-                "neworder",
-                "--kind=sell",
-                "--fiatcode=USD",
-                "--fiatamount=10",
-                "--paymentmethod=bank transfer",
-                "--amount=10000",
+                "order",
+                "new",
+                "--side=sell",
+                "--currency=USD",
+                "--fiat-amount=10",
+                "--payment-method=bank transfer",
+                "--sats=10000",
+                "--yes",
             ]
         );
     }
@@ -168,7 +183,21 @@ mod tests {
             ..sell(0)
         };
         let args = args(&params).unwrap();
-        assert!(args.contains(&"--fiatamount=100-500".to_string()));
+        assert!(args.contains(&"--fiat-amount=100".to_string()));
+        assert!(args.contains(&"--fiat-amount-max=500".to_string()));
+        assert_eq!(args.last().unwrap(), "--yes");
+    }
+
+    #[test]
+    fn a_range_order_has_no_fixed_sats() {
+        let params = CreateOrderParams {
+            fiat_amount: None,
+            fiat_amount_min: Some(100),
+            fiat_amount_max: Some(500),
+            amount_sats: Some(1000),
+            ..sell(0)
+        };
+        assert!(args(&params).is_err());
     }
 
     #[test]
@@ -255,7 +284,7 @@ mod tests {
             ..sell(10)
         };
         let args = args(&params).unwrap();
-        assert!(args.contains(&"--paymentmethod=--kind=buy".to_string()));
-        assert!(args.contains(&"--kind=sell".to_string()));
+        assert!(args.contains(&"--payment-method=--kind=buy".to_string()));
+        assert!(args.contains(&"--side=sell".to_string()));
     }
 }

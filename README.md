@@ -91,8 +91,8 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 |---|---|---|---|
 | `list_orders` | yes | `order list` | `kind?` (`buy`/`sell`), `currency?`, `status?` (`pending` default, `in-progress`, `success`, `canceled`) |
 | `get_order` | yes | `order info` | `order_id` (UUID) |
-| `create_order` | no | `neworder` | `kind`, `fiat_code`, `fiat_amount` **or** `fiat_amount_min`+`fiat_amount_max`, `payment_method`, `amount_sats?` (omit = market price), `premium?` (above -100 %), `invoice?` (buy only), `expiration_days?` |
-| `take_order` | no | `takesell` / `takebuy` | `order_id`, `order_kind` (the order's side, never guessed), `fiat_amount?` (range orders), `invoice?` (taking a sell only) |
+| `create_order` | no | `order new` | `kind`, `fiat_code`, `fiat_amount` **or** `fiat_amount_min`+`fiat_amount_max`, `payment_method`, `amount_sats?` (omit = market price), `premium?` (above -100 %), `invoice?` (buy only), `expiration_days?` |
+| `take_order` | no | `order take-sell` / `order take-buy` | `order_id`, `order_kind` (the order's side, never guessed), `fiat_amount?` (range orders), `invoice?` (taking a sell only) |
 
 Each tool advertises a JSON schema and MCP annotations (`readOnlyHint`). Every
 failure is a tool error (`isError: true`) whose text says what to fix; a CLI

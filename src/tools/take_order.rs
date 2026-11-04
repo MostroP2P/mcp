@@ -1,4 +1,4 @@
-//! `take_order` → `mostro-cli takesell` / `takebuy`. One tool, two CLI
+//! `take_order` → `mostro-cli order take-sell` / `order take-buy`. One tool, two CLI
 //! commands: which one depends on the side of the order being taken, which
 //! the caller must state — it is never guessed.
 //! State-changing: refused unless the server runs with writes enabled.
@@ -30,7 +30,11 @@ pub struct TakeOrderParams {
 pub fn args(params: &TakeOrderParams) -> Result<Vec<String>> {
     let id = order_id("order_id", &params.order_id)?;
     let mut args = match params.order_kind {
-        OrderKind::Sell => vec!["takesell".to_string(), flag("orderid", &id)],
+        OrderKind::Sell => vec![
+            "order".to_string(),
+            "take-sell".to_string(),
+            flag("order", &id),
+        ],
         OrderKind::Buy => {
             if params.invoice.is_some() {
                 return Err(invalid(
@@ -39,7 +43,11 @@ pub fn args(params: &TakeOrderParams) -> Result<Vec<String>> {
                      to receive by invoice",
                 ));
             }
-            vec!["takebuy".to_string(), flag("orderid", &id)]
+            vec![
+                "order".to_string(),
+                "take-buy".to_string(),
+                flag("order", &id),
+            ]
         }
     };
     if let Some(value) = &params.invoice {
@@ -51,6 +59,7 @@ pub fn args(params: &TakeOrderParams) -> Result<Vec<String>> {
         }
         args.push(flag("amount", amount));
     }
+    args.push("--yes".to_string());
     Ok(args)
 }
 
@@ -70,18 +79,18 @@ mod tests {
     }
 
     #[test]
-    fn taking_a_sell_order_is_takesell() {
+    fn taking_a_sell_order_is_take_sell() {
         assert_eq!(
             args(&take(OrderKind::Sell)).unwrap(),
-            ["takesell", &format!("--orderid={ID}")]
+            ["order", "take-sell", &format!("--order={ID}"), "--yes"]
         );
     }
 
     #[test]
-    fn taking_a_buy_order_is_takebuy() {
+    fn taking_a_buy_order_is_take_buy() {
         assert_eq!(
             args(&take(OrderKind::Buy)).unwrap(),
-            ["takebuy", &format!("--orderid={ID}")]
+            ["order", "take-buy", &format!("--order={ID}"), "--yes"]
         );
     }
 
@@ -95,10 +104,12 @@ mod tests {
         assert_eq!(
             args(&params).unwrap(),
             [
-                "takesell",
-                &format!("--orderid={ID}"),
+                "order",
+                "take-sell",
+                &format!("--order={ID}"),
                 "--invoice=lnbcrt1pexample",
-                "--amount=150"
+                "--amount=150",
+                "--yes"
             ]
         );
     }

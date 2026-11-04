@@ -25,3 +25,14 @@ Native Linux, on `main` after `47eef04` (local). Lean mode.
 - **Mutation spot check**: sending `--kind` instead of `--side` failed the unit and server tests (the run stops at the first failing test binary); restored.
 - **Docs**: README tool table and the `get_order` note name the new commands.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` (no FAILED), build.
+
+## Slice 3: Write Tools: 2026-11-04
+
+Native Linux, on `main` after `c0114db` (local). Lean mode.
+
+- **`create_order`** runs `order new --side --currency --fiat-amount [--fiat-amount-max] --payment-method [--sats] [--premium] [--invoice] [--expiration-days] --yes`; a range is now `--fiat-amount` plus `--fiat-amount-max` (the `100-200` syntax is gone), and `amount_sats` with a range is refused before spawning because the CLI prices a range at market. **`take_order`** runs `order take-sell|take-buy --order [--invoice] [--amount] --yes`. `--yes` is always added: the JSON mode never prompts, and the write gate (`MOSTRO_MCP_ALLOW_WRITES`) is unchanged and still checked before anything is built or spawned.
+- **Tests**: unit tests of both tools rewritten (vectors, range split, range without sats, flag-looking payment method stays one value, `--yes` last). Stdio: the existing write-gate test now expects `order take-sell`; a new test creates a range order (one `--yes`, `--fiat-amount-max=150`) and shows an `uncertain` take reaching the agent as an error starting `UNCERTAIN`.
+- **Real CLI**: `order new`, `order take-sell` and `order take-buy` accept the exact flags the tools build (`--help`, no network, nothing sent).
+- **Mutation spot check**: dropping `--yes` from `take_order` failed its unit tests; restored.
+- **Not run**: no node or regtest; the real create/take path is covered by the CLI repository's own probes and by slice 5 when authorized.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` (no FAILED), build.
