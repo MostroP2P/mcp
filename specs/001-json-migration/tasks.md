@@ -9,7 +9,7 @@ authorization.
 
 ## Slices
 
-- [ ] **1. Backend and contract check.** Fixtures with the CLI's example documents; the runner returns a parsed outcome (`--output json`, one
+- [x] **1. Backend and contract check.** (done 2026-11-04; evidence in `docs/TEST_SUMMARY.md`) Fixtures with the CLI's example documents; the runner returns a parsed outcome (`--output json`, one
   document, redaction and truncation of the text only); the outcome mapping (`ok`, `error`, `uncertain`, unreadable); the startup check over `schema`.
   Unit tests; the scripted CLI for the stdio tests.
 - [ ] **2. Read tools.** `list_orders` -> `order list`, `get_order` -> `order info`; params, `args`, descriptions, stdio tests for the three statuses.
