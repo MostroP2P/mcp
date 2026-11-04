@@ -15,3 +15,13 @@ Native Linux, `cargo` of the sandbox toolchain, on `main` after `e29c4be` (local
 - **Mutation spot checks**: skipping the exit-code check failed the both-directions test; making the contract check ignore names failed the missing-command test; both restored.
 - **A stray file**: an earlier red run of the overlap test wrote a file named `--output=json` in the working directory (the test script used `$1`, now `--output=json`); the test uses `$2` and the file was deleted.
 - **Gates**: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 72 passed and 0 failed (the real-node e2e is ignored), `cargo build`.
+
+## Slice 2: Read Tools: 2026-11-04
+
+Native Linux, on `main` after `47eef04` (local). Lean mode.
+
+- **`list_orders`** now runs `order list [--side] [--currency] [--status]` (the tool keeps its `kind` parameter; the CLI flag is `--side`, `--kind` no longer exists). **`get_order`** runs `order info --order <uuid>` (`--orderids` is gone). Ids and currency are still validated before anything is spawned.
+- **Tests**: the argument-vector unit tests of both tools were rewritten first and failed on the old commands; the server and stdio tests assert the new vectors; the three-statuses stdio test (ok, error, warned uncertain) already runs through `list_orders`. Real CLI: `order list` and `order info` accept the exact flags the tools build (checked with `--help`, no network).
+- **Mutation spot check**: sending `--kind` instead of `--side` failed the unit and server tests (the run stops at the first failing test binary); restored.
+- **Docs**: README tool table and the `get_order` note name the new commands.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` (no FAILED), build.

@@ -164,8 +164,9 @@ async fn list_orders_reaches_the_cli_with_the_node_config_and_nothing_else() {
         data["args"],
         json!([
             "--output=json",
-            "listorders",
-            "--kind=sell",
+            "order",
+            "list",
+            "--side=sell",
             "--currency=USD",
             "end"
         ])

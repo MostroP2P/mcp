@@ -312,7 +312,10 @@ mod tests {
         assert_eq!(document["command"], "order.list");
         assert_eq!(document["status"], "ok");
         assert!(text_of(&result).contains("\"order.list\""));
-        assert_eq!(*cli.calls.lock().unwrap(), [["listorders", "--kind=sell"]]);
+        assert_eq!(
+            *cli.calls.lock().unwrap(),
+            [["order", "list", "--side=sell"]]
+        );
     }
 
     #[tokio::test]

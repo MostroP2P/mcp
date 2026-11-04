@@ -1,4 +1,4 @@
-//! `get_order` → `mostro-cli ordersinfo`: the node's own record of an order.
+//! `get_order` → `mostro-cli order info`: the node's own record of an order.
 //!
 //! The daemon answers it per identity: it describes orders this identity
 //! made or took, and nothing else. A stranger's order is read from the book
@@ -19,8 +19,9 @@ pub struct GetOrderParams {
 
 pub fn args(params: &GetOrderParams) -> Result<Vec<String>> {
     Ok(vec![
-        "ordersinfo".to_string(),
-        flag("orderids", order_id("order_id", &params.order_id)?),
+        "order".to_string(),
+        "info".to_string(),
+        flag("order", order_id("order_id", &params.order_id)?),
     ])
 }
 
@@ -29,15 +30,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn asks_ordersinfo_for_the_canonical_id() {
+    fn asks_order_info_for_the_canonical_id() {
         let params = GetOrderParams {
             order_id: "FFDC768A-37D8-429E-BFCC-0968BE56B6F9".into(),
         };
         assert_eq!(
             args(&params).unwrap(),
             [
-                "ordersinfo",
-                "--orderids=ffdc768a-37d8-429e-bfcc-0968be56b6f9"
+                "order",
+                "info",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9"
             ]
         );
     }
