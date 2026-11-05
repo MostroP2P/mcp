@@ -1,0 +1,16 @@
+# Test Summary
+
+Evidence per slice of [specs/001-json-migration](../specs/001-json-migration/tasks.md), one entry each.
+
+## Slice 1a: Backend And Outcome Mapping: 2026-11-04
+
+Native Linux, `cargo` of the sandbox toolchain, on `main` after `e29c4be` (local). Lean mode: the only evidence entry for the slice.
+
+- **Fixtures** (`tests/fixtures/outcomes.json`, `README.md`): eleven documents copied from the `contracts/examples.json` files of the CLI repository at `develop` `a364055` (a listing, a node refusal, an order created, a bond to pay, an uncertain take, a range release, a refused release, an uncertain release, a message list, an order added by sync, a missing `--yes`) with their exit codes.
+- **Backend** (`cli_backend.rs`): every run adds `--output=json`; it returns `CliRun` (raw stdout, cleaned and cut stderr, exit code) and no longer judges the exit status, because the CLI prints its document for failures too. Cleared environment, timeout, kill on drop and the single-flight lock are unchanged. Unit tests: the argument vector (`--output=json` first), arguments reach the CLI verbatim without a shell, a failing CLI returns its status, stdout and cleaned stderr, stdout is never cut while stderr is.
+- **Outcome mapping** (`outcome.rs`): `Outcome::parse` accepts exactly one document of schema version 1 with a valid `status`, checks it against the exit code in both directions (an `ok` document with a failing exit, or a failure with exit 0, is not believed), refuses a document over 256 KiB instead of cutting it, and redacts `nsec1...` and strips ANSI before parsing, so the text and the structured content are the same checked document. `into_tool_result`: `ok` is a result, `error` a tool error, `uncertain` a tool error whose text starts with `UNCERTAIN: ... Do NOT retry ...`; all carry structured content (rmcp 3.5.1 supports it). 9 unit tests, including every fixture parsing with the status its exit code implies.
+- **Server** (`server.rs`): the tools' results are the mapped outcomes; output that is not a document (or disagrees with the exit status) is a tool error with the reason, the CLI's stderr and a cleaned excerpt; the instructions describe the JSON results and the `uncertain` rule. The tools themselves are unchanged in this slice: they still build the old arguments until slices 2 and 3.
+- **Stdio tests** (`tests/mcp_stdio.rs`, 8, real binary and real MCP client): the fake CLI echoes its arguments and environment as an `ok` document, or prints a chosen fixture with its exit code. Covered: discovery of four tools, the node configuration and nothing else reaching the CLI, the write gate, the three statuses (`ok`, `error`, warned `uncertain`), non-document output keeping the server alive, and a bad argument.
+- **Mutation spot checks**: skipping the exit-code check failed the both-directions test; restored.
+- **A stray file**: an earlier red run of the overlap test wrote a file named `--output=json` in the working directory (the test script used `$1`, now `--output=json`); the test uses `$2` and the file was deleted.
+- **Gates**: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 72 passed and 0 failed (the real-node e2e is ignored), `cargo build`.

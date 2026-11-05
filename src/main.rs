@@ -26,7 +26,8 @@ async fn main() -> anyhow::Result<()> {
         "starting mostro-mcp"
     );
 
-    let server = MostroServer::new(MostroCliBackend::new(&config), config.allow_writes);
+    let backend = MostroCliBackend::new(&config);
+    let server = MostroServer::new(backend, config.allow_writes);
     let service = server
         .serve(stdio())
         .await
