@@ -9,9 +9,10 @@ authorization.
 
 ## Slices
 
-- [ ] **1. Backend and contract check.** Fixtures with the CLI's example documents; the runner returns a parsed outcome (`--output json`, one
-  document, redaction and truncation of the text only); the outcome mapping (`ok`, `error`, `uncertain`, unreadable); the startup check over `schema`.
+- [x] **1a. Backend and outcome mapping.** (done 2026-11-04; evidence in `docs/TEST_SUMMARY.md`) Fixtures with the CLI's example documents; the runner returns a parsed outcome (`--output json`, one
+  document, redaction and truncation of the text only); the outcome mapping (`ok`, `error`, `uncertain`, unreadable).
   Unit tests; the scripted CLI for the stdio tests.
+- [ ] **1b. Startup contract check.** `schema` once at startup; stop naming the missing commands; old CLI refused.
 - [ ] **2. Read tools.** `list_orders` -> `order list`, `get_order` -> `order info`; params, `args`, descriptions, stdio tests for the three statuses.
 - [ ] **3. Write tools.** `create_order` -> `order new --yes`, `take_order` -> `order take-sell|take-buy --yes`; the write gate unchanged; stdio tests
   including the refusals before spawning and the `uncertain` warning.

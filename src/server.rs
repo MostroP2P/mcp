@@ -11,6 +11,7 @@ use rmcp::{
 
 use crate::cli_backend::CliRunner;
 use crate::error::{Error, Result as MostroResult};
+use crate::outcome::{Outcome, excerpt};
 use crate::tools::{
     create_order::{self, CreateOrderParams},
     get_order::{self, GetOrderParams},
@@ -31,7 +32,10 @@ user to a trade: confirm the exact order, side and amounts with the user \
 before calling them. This server refuses them unless it was started with \
 MOSTRO_MCP_ALLOW_WRITES=true.
 
-Results are mostro-cli's text output.";
+Every result is the JSON outcome document of mostro-cli: `status` (`ok`, `error` or \
+`uncertain`), `data` (with `next_step` where the node asks the user for something), \
+`error` and `warnings`. An `uncertain` result means the request may have reached the \
+node: never retry it, check the state first.";
 
 pub struct MostroServer<R: CliRunner> {
     runner: Arc<R>,
@@ -135,15 +139,25 @@ impl<R: CliRunner> MostroServer<R> {
         };
         let command = args.first().cloned().unwrap_or_default();
         match self.runner.run(args).await {
-            Ok(output) => {
-                tracing::info!(%command, "mostro-cli finished");
-                let text = if output.stdout.trim().is_empty() {
-                    "mostro-cli finished without output.".to_string()
-                } else {
-                    output.stdout
-                };
-                CallToolResult::success(vec![ContentBlock::text(text)])
-            }
+            Ok(run) => match Outcome::parse(&run.stdout, run.code) {
+                Ok(outcome) => {
+                    tracing::info!(%command, status = ?outcome.status(), "mostro-cli finished");
+                    outcome.into_tool_result()
+                }
+                Err(reason) => {
+                    tracing::warn!(%command, %reason, "mostro-cli output not usable");
+                    let status = run
+                        .code
+                        .map_or("it was stopped by a signal".to_string(), |code| {
+                            format!("exit status: {code}")
+                        });
+                    tool_error(&Error::CliFailed {
+                        status: format!("{status}; {reason}"),
+                        stderr: run.stderr,
+                        stdout: excerpt(&run.stdout),
+                    })
+                }
+            },
             Err(error) => {
                 tracing::warn!(%command, %error, "mostro-cli failed");
                 tool_error(&error)
@@ -188,17 +202,17 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::cli_backend::CliOutput;
+    use crate::cli_backend::CliRun;
     use crate::tools::OrderKind;
 
     /// Records every argument vector and answers with a canned result.
     struct FakeCli {
         calls: Mutex<Vec<Vec<String>>>,
-        reply: fn() -> MostroResult<CliOutput>,
+        reply: fn() -> MostroResult<CliRun>,
     }
 
     impl FakeCli {
-        fn answering(reply: fn() -> MostroResult<CliOutput>) -> Self {
+        fn answering(reply: fn() -> MostroResult<CliRun>) -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
                 reply,
@@ -207,17 +221,26 @@ mod tests {
     }
 
     impl CliRunner for Arc<FakeCli> {
-        async fn run(&self, args: Vec<String>) -> MostroResult<CliOutput> {
+        async fn run(&self, args: Vec<String>) -> MostroResult<CliRun> {
             self.calls.lock().unwrap().push(args);
             (self.reply)()
         }
     }
 
-    fn ok_output() -> MostroResult<CliOutput> {
-        Ok(CliOutput {
-            stdout: "📋 List Orders\n(table)".into(),
+    const OUTCOMES: &str = include_str!("../tests/fixtures/outcomes.json");
+
+    /// A fixture of the CLI's own documents as a finished run.
+    fn run_of(name: &str) -> MostroResult<CliRun> {
+        let all: serde_json::Value = serde_json::from_str(OUTCOMES).unwrap();
+        Ok(CliRun {
+            stdout: all[name]["stdout"].to_string(),
             stderr: String::new(),
+            code: Some(i32::try_from(all[name]["exit_code"].as_i64().unwrap()).unwrap()),
         })
+    }
+
+    fn ok_output() -> MostroResult<CliRun> {
+        run_of("list_empty")
     }
 
     fn server(allow_writes: bool) -> (MostroServer<Arc<FakeCli>>, Arc<FakeCli>) {
@@ -282,7 +305,13 @@ mod tests {
             }))
             .await;
         assert_ne!(result.is_error, Some(true));
-        assert!(text_of(&result).contains("List Orders"));
+        let document = result
+            .structured_content
+            .clone()
+            .expect("structured content");
+        assert_eq!(document["command"], "order.list");
+        assert_eq!(document["status"], "ok");
+        assert!(text_of(&result).contains("\"order.list\""));
         assert_eq!(*cli.calls.lock().unwrap(), [["listorders", "--kind=sell"]]);
     }
 
@@ -327,12 +356,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cli_failure_is_a_readable_tool_error() {
+    async fn an_error_outcome_is_a_tool_error_with_the_nodes_reason() {
+        let cli = Arc::new(FakeCli::answering(|| run_of("release_node_refused")));
+        let server = MostroServer::new(Arc::clone(&cli), false);
+        let result = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let body = text_of(&result);
+        assert!(
+            body.contains("node_refused") && body.contains("invalid_peer"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_uncertain_outcome_tells_the_agent_not_to_retry() {
+        let cli = Arc::new(FakeCli::answering(|| run_of("take_uncertain")));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let result = server.create_order(Parameters(sell_order())).await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    }
+
+    #[tokio::test]
+    async fn output_that_is_not_an_outcome_is_a_readable_tool_error_with_the_clis_stderr() {
         let cli = Arc::new(FakeCli::answering(|| {
-            Err(Error::CliFailed {
-                status: "exit status: 1".into(),
+            Ok(CliRun {
+                stdout: "not a document".into(),
                 stderr: "RELAYS not set".into(),
-                stdout: String::new(),
+                code: Some(1),
             })
         }));
         let server = MostroServer::new(Arc::clone(&cli), false);
@@ -340,6 +393,39 @@ mod tests {
             .list_orders(Parameters(ListOrdersParams::default()))
             .await;
         assert_eq!(result.is_error, Some(true));
-        assert!(text_of(&result).contains("RELAYS not set"));
+        let body = text_of(&result);
+        assert!(
+            body.contains("RELAYS not set") && body.contains("not one JSON"),
+            "{body}"
+        );
+        assert!(body.contains("not a document"), "the excerpt: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_document_that_disagrees_with_the_exit_status_is_not_believed() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            let mut run = run_of("list_empty")?;
+            run.code = Some(1);
+            Ok(run)
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), false);
+        let result = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("exit status"));
+    }
+
+    #[tokio::test]
+    async fn a_runner_failure_is_a_readable_tool_error() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Err(Error::CliNotFound("/x/mostro-cli".into()))
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), false);
+        let result = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("MOSTRO_CLI_PATH"));
     }
 }
