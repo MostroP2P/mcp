@@ -293,6 +293,366 @@
    "warnings": []
   }
  },
+ "schema": {
+  "exit_code": 0,
+  "stdout": {
+   "command": "schema",
+   "data": {
+    "commands": [
+     {
+      "cli_path": [
+       "conversationkey"
+      ],
+      "name": "account.conversation-key",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "getuserinfo"
+      ],
+      "name": "account.info",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "restore"
+      ],
+      "name": "account.restore",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "getlasttradeindex"
+      ],
+      "name": "account.trade-index",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "getlasttradeprivkey"
+      ],
+      "name": "account.trade-key",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admaddsolver"
+      ],
+      "name": "admin.add-solver",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admcancel"
+      ],
+      "name": "admin.cancel",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "sendadmindmattach"
+      ],
+      "name": "admin.message-attach",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "getadmindm"
+      ],
+      "name": "admin.message-list",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admsenddm"
+      ],
+      "name": "admin.message-send",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admsettle"
+      ],
+      "name": "admin.settle",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admtakedispute"
+      ],
+      "name": "admin.take-dispute",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "bond",
+       "add-invoice"
+      ],
+      "name": "bond.add-invoice",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "getdmuser"
+      ],
+      "name": "chat.history",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "dmtouser"
+      ],
+      "name": "chat.send",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "disputechat"
+      ],
+      "name": "dispute.chat",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "listdisputes"
+      ],
+      "name": "dispute.list",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "dispute"
+      ],
+      "name": "dispute.open",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admcancelpending"
+      ],
+      "name": "maintenance.cancel-pending",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admsetmaintenance"
+      ],
+      "name": "maintenance.set",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "admmaintenancestatus"
+      ],
+      "name": "maintenance.status",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "message",
+       "list"
+      ],
+      "name": "message.list",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "senddm"
+      ],
+      "name": "message.send",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "add-invoice"
+      ],
+      "name": "order.add-invoice",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "cancel"
+      ],
+      "name": "order.cancel",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "fiat-sent"
+      ],
+      "name": "order.fiat-sent",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "info"
+      ],
+      "name": "order.info",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "list"
+      ],
+      "name": "order.list",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "new"
+      ],
+      "name": "order.new",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "rate"
+      ],
+      "name": "order.rate",
+      "output_modes": [
+       "human"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "release"
+      ],
+      "name": "order.release",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "sync"
+      ],
+      "name": "order.sync",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "take-buy"
+      ],
+      "name": "order.take-buy",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
+       "take-sell"
+      ],
+      "name": "order.take-sell",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "schema"
+      ],
+      "name": "schema",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     }
+    ]
+   },
+   "error": null,
+   "meta": {
+    "daemon_acceptance": "not_applicable",
+    "persistence": "not_applicable",
+    "publication": "not_applicable",
+    "snapshot": null
+   },
+   "schema_version": "1",
+   "status": "ok",
+   "warnings": []
+  }
+ },
  "sync_child_added": {
   "exit_code": 0,
   "stdout": {
