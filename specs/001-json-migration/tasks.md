@@ -13,8 +13,8 @@ authorization.
   document, redaction and truncation of the text only); the outcome mapping (`ok`, `error`, `uncertain`, unreadable).
   Unit tests; the scripted CLI for the stdio tests.
 - [x] **1b. Startup contract check.** (done 2026-11-04) `schema` once at startup; stop naming the missing commands; old CLI refused.
-- [ ] **2. Read tools.** `list_orders` -> `order list`, `get_order` -> `order info`; params, `args`, descriptions, stdio tests for the three statuses.
-- [ ] **3. Write tools.** `create_order` -> `order new --yes`, `take_order` -> `order take-sell|take-buy --yes`; the write gate unchanged; stdio tests
+- [x] **2. Read tools.** (done 2026-11-04) `list_orders` -> `order list`, `get_order` -> `order info`; params, `args`, descriptions, stdio tests for the three statuses.
+- [x] **3. Write tools.** (done 2026-11-04) `create_order` -> `order new --yes`, `take_order` -> `order take-sell|take-buy --yes`; the write gate unchanged; stdio tests
   including the refusals before spawning and the `uncertain` warning.
 - [ ] **4. The tools that finish a trade.** `list_messages`, `add_invoice`, `add_bond_invoice`, `fiat_sent`, `release` (with `fiat_received`), `cancel`,
   `sync_orders`; tests as above.

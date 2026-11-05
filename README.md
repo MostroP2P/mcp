@@ -89,10 +89,10 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 
 | Tool | Read-only | mostro-cli | Arguments |
 |---|---|---|---|
-| `list_orders` | yes | `listorders` | `kind?` (`buy`/`sell`), `currency?`, `status?` (`pending` default, `in-progress`, `success`, `canceled`) |
-| `get_order` | yes | `ordersinfo` | `order_id` (UUID) |
-| `create_order` | no | `neworder` | `kind`, `fiat_code`, `fiat_amount` **or** `fiat_amount_min`+`fiat_amount_max`, `payment_method`, `amount_sats?` (omit = market price), `premium?` (above -100 %), `invoice?` (buy only), `expiration_days?` |
-| `take_order` | no | `takesell` / `takebuy` | `order_id`, `order_kind` (the order's side, never guessed), `fiat_amount?` (range orders), `invoice?` (taking a sell only) |
+| `list_orders` | yes | `order list` | `kind?` (`buy`/`sell`), `currency?`, `status?` (`pending` default, `in-progress`, `success`, `canceled`) |
+| `get_order` | yes | `order info` | `order_id` (UUID) |
+| `create_order` | no | `order new` | `kind`, `fiat_code`, `fiat_amount` **or** `fiat_amount_min`+`fiat_amount_max`, `payment_method`, `amount_sats?` (omit = market price), `premium?` (above -100 %), `invoice?` (buy only), `expiration_days?` |
+| `take_order` | no | `order take-sell` / `order take-buy` | `order_id`, `order_kind` (the order's side, never guessed), `fiat_amount?` (range orders), `invoice?` (taking a sell only) |
 
 Each tool advertises a JSON schema and MCP annotations (`readOnlyHint`). Every
 failure is a tool error (`isError: true`) whose text says what to fix; a CLI
@@ -181,7 +181,7 @@ invoices settled for 15 000 and 11 000 sats.
   to emoji, spacing or columns. Structured results need a JSON mode in the CLI,
   or the library route below.
 - **`get_order` only describes your own orders.** The daemon answers
-  `ordersinfo` per identity; another user's order returns *Resource not found*.
+  `order info` per identity; another user's order returns *Resource not found*.
   Use `list_orders` for the book.
 - **A failed write may still have reached the node.** A timeout, or a CLI that
   fails after the node answered, does not mean nothing happened. The error says
