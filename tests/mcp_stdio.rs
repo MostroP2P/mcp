@@ -17,15 +17,23 @@ const NODE: &str = "724497f34e6c4f55f9aa90f5e9dcc326c76a9f2ed817b0f0eb940ee7218a
 
 const OUTCOMES: &str = include_str!("fixtures/outcomes.json");
 
-/// A stand-in `mostro-cli`. It answers with `reply.json` (printed as is, ending with the exit code in
+/// A stand-in `mostro-cli`. It answers `schema` with the contract fixture; any
+/// other command with `reply.json` (printed as is, ending with the exit code in
 /// `reply.code`) when the test wrote one, else with an `ok` document that
 /// echoes the arguments and the node configuration it was handed.
 fn fake_cli(dir: &tempfile::TempDir) -> PathBuf {
+    let outcomes: Value = serde_json::from_str(OUTCOMES).unwrap();
+    std::fs::write(
+        dir.path().join("schema.json"),
+        outcomes["schema"]["stdout"].to_string(),
+    )
+    .unwrap();
     let path = dir.path().join("mostro-cli");
     std::fs::write(
         &path,
         "#!/bin/sh\n\
          here=$(dirname \"$0\")\n\
+         if [ \"$2\" = schema ]; then cat \"$here/schema.json\"; exit 0; fi\n\
          if [ -f \"$here/reply.json\" ]; then cat \"$here/reply.json\"; exit \"$(cat \"$here/reply.code\")\"; fi\n\
          args=''; for a in \"$@\"; do args=\"$args\\\"$a\\\",\"; done\n\
          printf '{\"schema_version\":\"1\",\"command\":\"echo\",\"status\":\"ok\",\"data\":{\"node\":\"%s\",\"relays\":\"%s\",\"admin\":\"%s\",\"other\":\"%s\",\"args\":[%s\"end\"]},\"error\":null,\"warnings\":[],\"meta\":{}}\\n' \\\n\
@@ -230,6 +238,71 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
     );
     assert_eq!(client.list_all_tools().await.unwrap().len(), 4);
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cli_that_lacks_the_json_commands_stops_the_server_with_the_missing_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    // The fixture without order.take-buy.
+    let outcomes: Value = serde_json::from_str(OUTCOMES).unwrap();
+    let mut schema = outcomes["schema"]["stdout"].clone();
+    schema["data"]["commands"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["name"] != "order.take-buy");
+    std::fs::write(dir.path().join("schema.json"), schema.to_string()).unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", &cli)
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .env("MOSTRO_MCP_ALLOW_WRITES", "true")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a normal error exit, not a panic"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("mostro-cli does not offer JSON output for:"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("order.take-buy"), "{stderr}");
+    assert!(
+        !stderr.contains("order.take-sell"),
+        "only what is missing: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn a_cli_that_does_not_know_schema_stops_the_server_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("mostro-cli");
+    std::fs::write(
+        &old,
+        "#!/bin/sh\necho 'error: unrecognized subcommand' >&2\nexit 2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", &old)
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("predates the JSON interface"), "{stderr}");
 }
 
 #[tokio::test]
