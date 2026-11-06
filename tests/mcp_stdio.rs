@@ -164,8 +164,9 @@ async fn list_orders_reaches_the_cli_with_the_node_config_and_nothing_else() {
         data["args"],
         json!([
             "--output=json",
-            "listorders",
-            "--kind=sell",
+            "order",
+            "list",
+            "--side=sell",
             "--currency=USD",
             "end"
         ])
@@ -193,7 +194,7 @@ async fn writes_are_refused_unless_the_server_opted_in() {
     let writable = connect(&fake_cli(&dir), true).await;
     let taken = call(&writable, "take_order", take).await;
     assert_ne!(taken.is_error, Some(true), "{}", text(&taken));
-    assert_eq!(data_of(&taken)["args"][1], "takesell");
+    assert_eq!(data_of(&taken)["args"][2], "take-sell");
     writable.cancel().await.unwrap();
 }
 
@@ -218,6 +219,52 @@ async fn the_three_statuses_reach_the_agent_as_a_result_an_error_and_a_warned_er
         assert!(result.structured_content.is_some(), "{fixture}");
         client.cancel().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_write_confirms_for_the_cli_and_an_uncertain_take_warns_without_retrying() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    let client = connect(&cli, true).await;
+    let created = call(
+        &client,
+        "create_order",
+        json!({"kind": "sell", "fiat_code": "usd", "fiat_amount_min": 50,
+               "fiat_amount_max": 150, "payment_method": "bank transfer"}),
+    )
+    .await;
+    assert_ne!(created.is_error, Some(true), "{}", text(&created));
+    let args = data_of(&created)["args"].clone();
+    assert_eq!(args[1], "order");
+    assert_eq!(args[2], "new");
+    assert_eq!(
+        args.as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| *a == "--yes")
+            .count(),
+        1
+    );
+    assert!(
+        args.as_array()
+            .unwrap()
+            .contains(&json!("--fiat-amount-max=150"))
+    );
+    client.cancel().await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    answer_with(&dir, "take_uncertain");
+    let client = connect(&cli, true).await;
+    let taken = call(
+        &client,
+        "take_order",
+        json!({"order_id": "ffdc768a-37d8-429e-bfcc-0968be56b6f9", "order_kind": "sell"}),
+    )
+    .await;
+    assert_eq!(taken.is_error, Some(true));
+    assert!(text(&taken).starts_with("UNCERTAIN"), "{}", text(&taken));
+    client.cancel().await.unwrap();
 }
 
 #[tokio::test]

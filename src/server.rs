@@ -312,7 +312,10 @@ mod tests {
         assert_eq!(document["command"], "order.list");
         assert_eq!(document["status"], "ok");
         assert!(text_of(&result).contains("\"order.list\""));
-        assert_eq!(*cli.calls.lock().unwrap(), [["listorders", "--kind=sell"]]);
+        assert_eq!(
+            *cli.calls.lock().unwrap(),
+            [["order", "list", "--side=sell"]]
+        );
     }
 
     #[tokio::test]
@@ -339,7 +342,7 @@ mod tests {
         let (server, cli) = server(true);
         let result = server.create_order(Parameters(sell_order())).await;
         assert_ne!(result.is_error, Some(true));
-        assert_eq!(cli.calls.lock().unwrap()[0][0], "neworder");
+        assert_eq!(cli.calls.lock().unwrap()[0][..2], ["order", "new"]);
     }
 
     #[tokio::test]
