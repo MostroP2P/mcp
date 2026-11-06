@@ -12,8 +12,9 @@ returns a parsed outcome, each tool builds the new command line, the server maps
 
 1. **Backend** (`cli_backend.rs`): `CliRunner::run(args)` adds `--output json` and returns the run (stdout, cleaned stderr, exit code); it keeps the
    cleared environment, timeout, single-flight lock and kill-on-drop. `CliOutput`'s text-only path is removed. Parsing the outcome refuses stdout over
-   a fixed size limit as a whole (a tool error naming the size and the limit, never a cut document), and strips ANSI and redacts `nsec1...` *before*
-   parsing, so the text and the structured content are serialized from one redacted document; only the excerpt of unreadable output is truncated.
+   a fixed size limit as a whole (a tool error naming the size and the limit, never a cut document). It redacts `nsec1...` twice: in the raw text
+   after stripping ANSI, and in every string of the parsed document, since a JSON escape can hide the prefix from the raw text. The text and the
+   structured content are serialized from that one redacted document; only the excerpt of unreadable output is truncated.
    Tested with a document over the limit.
 2. **Mapping** (`server.rs` or a new `outcome.rs`): `ok` -> success; `error` -> tool error with `error.code`/`reason`; `uncertain` -> tool error whose
    text is the fixed warning, a blank line and the document, and whose structured content is the document; unreadable output -> tool error with a
