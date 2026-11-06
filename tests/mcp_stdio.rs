@@ -263,8 +263,16 @@ async fn a_cli_that_lacks_the_json_commands_stops_the_server_with_the_missing_na
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a normal error exit, not a panic"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("mostro-cli does not offer JSON output for:"),
+        "{stderr}"
+    );
     assert!(stderr.contains("order.take-buy"), "{stderr}");
     assert!(
         !stderr.contains("order.take-sell"),
