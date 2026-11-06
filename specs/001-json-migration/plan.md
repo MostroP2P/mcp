@@ -10,11 +10,14 @@ returns a parsed outcome, each tool builds the new command line, the server maps
 
 ## Design
 
-1. **Backend** (`cli_backend.rs`): `CliRunner::run(args)` returns `Outcome { document: serde_json::Value, raw: String }`; it adds `--output json`,
-   parses stdout, redacts and truncates the *text* (never the parse input), and keeps the cleared environment, timeout, single-flight lock and kill-on-drop.
-   `CliOutput`'s text-only path is removed.
-2. **Mapping** (`server.rs` or a new `outcome.rs`): `ok` -> success; `error` -> tool error with `error.code`/`reason`; `uncertain` -> tool error with the
-   fixed warning; unreadable output -> tool error. One function, unit-tested with the CLI's examples.
+1. **Backend** (`cli_backend.rs`): `CliRunner::run(args)` adds `--output json` and returns the run (stdout, cleaned stderr, exit code); it keeps the
+   cleared environment, timeout, single-flight lock and kill-on-drop. `CliOutput`'s text-only path is removed. Parsing the outcome refuses stdout over
+   a fixed size limit as a whole (a tool error naming the size and the limit, never a cut document), and strips ANSI and redacts `nsec1...` *before*
+   parsing, so the text and the structured content are serialized from one redacted document; only the excerpt of unreadable output is truncated.
+   Tested with a document over the limit.
+2. **Mapping** (`server.rs` or a new `outcome.rs`): `ok` -> success; `error` -> tool error with `error.code`/`reason`; `uncertain` -> tool error whose
+   text is the fixed warning, a blank line and the document, and whose structured content is the document; unreadable output -> tool error with a
+   redacted, truncated excerpt, starting with the same fixed warning when the tool is state-changing. One function, unit-tested with the CLI's examples.
 3. **Contract check** (`contract.rs`): run `schema` at startup, compare the canonical names each enabled tool needs with the entries that list `json`;
    fail with the missing names and `--version`. A pure function over the parsed document, tested with good and bad documents.
 4. **Tools** (`tools/*.rs`): the four existing tools get the new flags (`--side`, `--currency`, `--fiat-amount[-max]`, `--payment-method`, `--sats`, `--premium`,
