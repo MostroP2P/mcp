@@ -32,6 +32,22 @@ pub fn excerpt(output: &str) -> String {
     text
 }
 
+/// A copy of `value` with every string redacted, object keys included.
+/// serde_json caps nesting at 128 levels, so the recursion is bounded.
+fn redact_document(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact_secrets(&text)),
+        Value::Array(items) => Value::Array(items.into_iter().map(redact_document).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, field)| (redact_secrets(&key), redact_document(field)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 /// The version of the outcome document this server understands.
 const SCHEMA_VERSION: &str = "1";
 
@@ -53,15 +69,18 @@ impl Outcome {
     /// Parse `stdout` of a CLI run that ended with `code`. The error is a
     /// reason fit to show an agent.
     pub fn parse(stdout: &str, code: Option<i32>) -> Result<Self, String> {
+        // The runner keeps one byte past the limit, so the size is not shown.
         if stdout.len() > MAX_DOCUMENT_BYTES {
             return Err(format!(
-                "the output is {} bytes, over the {MAX_DOCUMENT_BYTES} byte limit",
-                stdout.len()
+                "the output is over the {MAX_DOCUMENT_BYTES} byte limit"
             ));
         }
-        // Redacted before it is parsed, so what is returned is what was checked.
+        // Redacted before it is parsed, so what is returned is what was checked,
+        // and again once parsed: a JSON escape (`\u006e`) hides a key from the
+        // first pass and decoding brings it back.
         let clean = redact_secrets(&strip_ansi(stdout));
         let document: Value = serde_json::from_str(clean.trim())
+            .map(redact_document)
             .map_err(|_| "the output is not one JSON outcome document".to_string())?;
         let status = match document.get("status").and_then(Value::as_str) {
             Some("ok") => Status::Ok,
@@ -282,6 +301,22 @@ mod tests {
                 .to_string()
                 .contains(&key)
         );
+    }
+
+    #[test]
+    fn a_secret_key_hidden_by_a_json_escape_is_redacted_once_decoded() {
+        let body = "q".repeat(58);
+        let key = format!("nsec1{body}");
+        // `\u006e` is `n`: the raw text has no `nsec1`, the parsed string has.
+        let escaped = format!(r"\u006esec1{body}");
+        let stdout = format!(
+            r#"{{"schema_version":"1","command":"x","status":"ok","data":{{"notes":["{escaped}"],"{escaped}":1}}}}"#
+        );
+        let result = Outcome::parse(&stdout, Some(0)).unwrap().into_tool_result();
+        assert!(!text(&result).contains(&key), "{}", text(&result));
+        let document = result.structured_content.unwrap().to_string();
+        assert!(!document.contains(&key), "{document}");
+        assert!(document.contains("[redacted nsec]"), "{document}");
     }
 
     #[test]
