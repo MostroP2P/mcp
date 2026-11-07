@@ -31,9 +31,10 @@ feature moves the server to the new contract, then lets an agent finish a whole 
 
 - Q: Scope and order? -> A: First migrate the four existing tools so the server works again (slices 1-3), then add the tools that complete a trade
   (slices 4-5): `list_messages`, `add_invoice`, `fiat_sent`, `release`, `cancel`, `sync_orders` (and `add_bond_invoice`). Each group is reviewed on its own.
-- Q: What does a tool return? -> A: The CLI's JSON outcome as the text block (compact, the same bytes the CLI printed, after redaction), plus the
-  same document as MCP structured content when the SDK supports it. `status: ok` is a successful tool result; `error` is a tool error (`isError`);
-  `uncertain` is a tool error whose text starts with a fixed warning not to retry and to check the state first (`get_order`, `list_messages`).
+- Q: What does a tool return? -> A: The CLI's JSON outcome, redacted (FR-006), as the text block (compact, serialized from the parsed
+  document), plus the same document as MCP structured content when the SDK supports it. `status: ok` is a successful tool result; `error` is a tool
+  error (`isError`); `uncertain` is a tool error whose text block starts with a fixed warning not to retry and to check the state first (as FR-001
+  describes), followed by a blank line and the document; its structured content is the document alone, unchanged.
 - Q: How does the server know the CLI fits? -> A: At startup it runs `schema` once and refuses to start, naming the missing commands and the CLI's
   `--version`, unless every command the enabled tools need is listed with `json` among its `output_modes`. The README stops pinning a commit.
 - Q: Confirmation? -> A: The server always passes `--yes` (the confirmation is the host's tool-approval prompt plus `MOSTRO_MCP_ALLOW_WRITES`, refused
@@ -51,16 +52,22 @@ commands (not migrated in the CLI), a multi-user or per-call identity, changing 
 ## Requirements
 
 - **FR-001**: The backend runs the CLI with `--output json` for every tool, parses stdout as one outcome document, and never trusts the exit code alone.
-  Output that is not exactly one document is a tool error with a redacted, truncated excerpt.
+  Output that is not exactly one document (including stdout over the size limit, which is refused whole, never cut) is a tool error with a redacted,
+  truncated excerpt. For a state-changing tool that error starts with the same no-retry warning as `uncertain`: the CLI ran, so the request may have
+  reached the node. The agent checks the state first: `get_order` when it has the order id, `list_orders` when it does not (an uncertain or unreadable
+  `create_order`), `list_messages` once slice 4 adds it. An order missing from the book does not prove the write failed; when the state stays unclear,
+  the user reconciles it by hand before anything is retried.
 - **FR-002**: Every tool maps to its canonical command (`order list`, `order info`, `order new`, `order take-sell|take-buy`, `order add-invoice`,
   `bond add-invoice`, `order fiat-sent`, `order release`, `order cancel`, `order sync`, `message list`), with arguments validated before the CLI starts and
   passed as `--flag=value` so a value can never become a flag.
-- **FR-003**: Outcome mapping as clarified above: `ok` success, `error` tool error, `uncertain` tool error with the no-retry warning; warnings are kept
-  in the document; the text and the structured content are the same document.
+- **FR-003**: Outcome mapping as clarified above: `ok` success, `error` tool error, `uncertain` tool error with the no-retry warning first in the text;
+  warnings are kept in the document; the structured content is the document, and the text is that same document (after the warning, for `uncertain`).
 - **FR-004**: State-changing tools are refused before any process starts unless writes are enabled; `release` also needs `fiat_received: true`.
 - **FR-005**: Startup contract check through `schema`, as clarified.
-- **FR-006**: The environment of the CLI stays cleared except the node configuration and the fixed allow-list; output is redacted of `nsec1...`; one CLI
-  run at a time; a per-call timeout that reports possible delivery.
+- **FR-006**: The environment of the CLI stays cleared except the node configuration and the fixed allow-list; output is redacted of `nsec1...` twice:
+  the raw text before it is parsed (so an excerpt of unreadable output is clean) and every string of the parsed document (a JSON escape such as
+  `\u006e` hides the prefix from the raw text), so the text and the structured content carry the same redacted document; one CLI run at a time; a
+  per-call timeout that reports possible delivery.
 - **FR-007**: Tool descriptions state what is state-changing, that sats are never paid by the tools, what `uncertain` means, and name the next tool to
   call (for example `list_messages` after a take).
 - **FR-008**: The README documents the tools, the CLI requirement (a `schema` that lists the commands), the flow of a whole trade and the security

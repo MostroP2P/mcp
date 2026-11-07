@@ -10,6 +10,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -119,19 +120,56 @@ impl MostroCliBackend {
 impl CliRunner for MostroCliBackend {
     async fn run(&self, args: Vec<String>) -> Result<CliRun> {
         let _turn = self.turn.lock().await;
-        let child = self.command(&args).spawn().map_err(|e| match e.kind() {
+        let mut child = self.command(&args).spawn().map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Error::CliNotFound(self.binary.display().to_string()),
             _ => Error::Io(e),
         })?;
-        let output = tokio::time::timeout(self.timeout, child.wait_with_output())
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            return Err(Error::Io(std::io::Error::other(
+                "mostro-cli output was not captured",
+            )));
+        };
+        let finished = async {
+            let (stdout, stderr) = tokio::try_join!(
+                read_bounded(stdout, STDOUT_READ_LIMIT),
+                read_bounded(stderr, STDERR_READ_LIMIT),
+            )?;
+            Ok::<_, std::io::Error>((stdout, stderr, child.wait().await?))
+        };
+        // On timeout `finished` is dropped and `child` with it, which kills it.
+        let (stdout, stderr, status) = tokio::time::timeout(self.timeout, finished)
             .await
             .map_err(|_| Error::Timeout(self.timeout))??;
         Ok(CliRun {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: clean(&output.stderr),
-            code: output.status.code(),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: clean(&stderr),
+            code: status.code(),
         })
     }
+}
+
+/// Most stdout bytes kept: one past the largest document, so
+/// [`crate::outcome::Outcome::parse`] still sees that it was too long.
+const STDOUT_READ_LIMIT: usize = crate::outcome::MAX_DOCUMENT_BYTES + 1;
+
+/// Most stderr bytes kept before cleaning: room for the colour codes that
+/// cleaning removes, then [`MAX_OUTPUT_BYTES`] applies.
+const STDERR_READ_LIMIT: usize = 4 * MAX_OUTPUT_BYTES;
+
+/// Reads `reader` to its end, keeping at most `limit` bytes. The rest is read
+/// and dropped: memory stays bounded however much the CLI prints, and the CLI
+/// never blocks on a full pipe (the timeout still bounds the whole run).
+async fn read_bounded(
+    mut reader: impl AsyncRead + Unpin,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut kept = Vec::new();
+    (&mut reader)
+        .take(u64::try_from(limit).unwrap_or(u64::MAX))
+        .read_to_end(&mut kept)
+        .await?;
+    tokio::io::copy(&mut reader, &mut tokio::io::sink()).await?;
+    Ok(kept)
 }
 
 fn clean(bytes: &[u8]) -> String {
@@ -395,6 +433,39 @@ mod tests {
             "{}",
             run.stderr
         );
+    }
+
+    #[tokio::test]
+    async fn a_flood_on_stdout_is_read_bounded_and_still_refused_as_too_long() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = script(&dir, r"head -c 4000000 /dev/zero | tr '\0' x");
+        let run = backend(cli, Duration::from_secs(10))
+            .run(vec![])
+            .await
+            .unwrap();
+        assert_eq!(
+            run.stdout.len(),
+            crate::outcome::MAX_DOCUMENT_BYTES + 1,
+            "only one byte past the limit is kept"
+        );
+        assert_eq!(run.code, Some(0), "the CLI was not cut off mid-write");
+        let reason = crate::outcome::Outcome::parse(&run.stdout, run.code).unwrap_err();
+        assert!(reason.contains("byte limit"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_flood_on_stderr_does_not_stall_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = script(
+            &dir,
+            r"head -c 4000000 /dev/zero | tr '\0' y >&2 && echo '{}'",
+        );
+        let run = backend(cli, Duration::from_secs(10))
+            .run(vec![])
+            .await
+            .unwrap();
+        assert_eq!(run.stdout.trim(), "{}");
+        assert!(run.stderr.ends_with(TRUNCATION_NOTE));
     }
 
     #[test]
