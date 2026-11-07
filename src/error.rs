@@ -10,7 +10,7 @@ pub enum Error {
 
     #[error(
         "state-changing tools are disabled on this server; restart it with \
-         MOSTRO_MCP_ALLOW_WRITES=true to enable create_order and take_order"
+         MOSTRO_MCP_ALLOW_WRITES=true to enable them"
     )]
     WritesDisabled,
 
@@ -19,8 +19,8 @@ pub enum Error {
 
     #[error(
         "mostro-cli did not finish within {0:?} (MOSTRO_MCP_COMMAND_TIMEOUT_SECS) and was \
-         stopped, but its message may have reached the node: check get_order or \
-         list_orders before retrying"
+         stopped, but its message may have reached the node: do not retry before \
+         checking get_order, list_my_orders or list_messages"
     )]
     Timeout(Duration),
 
@@ -33,6 +33,13 @@ pub enum Error {
 
     #[error("could not run mostro-cli: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error(
+        "mostro-cli does not offer JSON output for: {}. Install a mostro-cli whose \
+         `mostro-cli --output json schema` lists these commands",
+        .missing.join(", ")
+    )]
+    ContractMismatch { missing: Vec<String> },
 
     #[error("configuration: {0}")]
     Config(String),

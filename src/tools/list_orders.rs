@@ -1,4 +1,4 @@
-//! `list_orders` → `mostro-cli listorders`: the node's public order book
+//! `list_orders` → `mostro-cli order list`: the node's public order book
 //! (Kind 38383 events), read from the relays.
 
 use schemars::JsonSchema;
@@ -45,9 +45,9 @@ impl BookStatus {
 }
 
 pub fn args(params: &ListOrdersParams) -> Result<Vec<String>> {
-    let mut args = vec!["listorders".to_string()];
+    let mut args = vec!["order".to_string(), "list".to_string()];
     if let Some(kind) = params.kind {
-        args.push(flag("kind", kind.as_cli()));
+        args.push(flag("side", kind.as_cli()));
     }
     if let Some(currency) = &params.currency {
         args.push(flag("currency", fiat_code("currency", currency)?));
@@ -64,7 +64,10 @@ mod tests {
 
     #[test]
     fn no_filters_lists_the_pending_book() {
-        assert_eq!(args(&ListOrdersParams::default()).unwrap(), ["listorders"]);
+        assert_eq!(
+            args(&ListOrdersParams::default()).unwrap(),
+            ["order", "list"]
+        );
     }
 
     #[test]
@@ -77,8 +80,9 @@ mod tests {
         assert_eq!(
             args(&params).unwrap(),
             [
-                "listorders",
-                "--kind=sell",
+                "order",
+                "list",
+                "--side=sell",
                 "--currency=USD",
                 "--status=in-progress"
             ]

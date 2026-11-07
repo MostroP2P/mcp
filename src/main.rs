@@ -3,7 +3,13 @@
 //! stdout carries the protocol, so every log line goes to stderr.
 
 use anyhow::Context;
-use mostro_mcp::{cli_backend::MostroCliBackend, config::Config, server::MostroServer};
+use mostro_mcp::{
+    cli_backend::{CliRunner, MostroCliBackend},
+    config::Config,
+    contract,
+    outcome::Outcome,
+    server::MostroServer,
+};
 use rmcp::{ServiceExt, transport::stdio};
 use tracing_subscriber::EnvFilter;
 
@@ -26,11 +32,32 @@ async fn main() -> anyhow::Result<()> {
         "starting mostro-mcp"
     );
 
-    let server = MostroServer::new(MostroCliBackend::new(&config), config.allow_writes);
+    let backend = MostroCliBackend::new(&config);
+    check_contract(&backend, config.allow_writes).await?;
+    let server = MostroServer::new(backend, config.allow_writes);
     let service = server
         .serve(stdio())
         .await
         .context("MCP handshake failed")?;
     service.waiting().await?;
+    Ok(())
+}
+
+/// Stop here, with the missing commands named, if the installed `mostro-cli`
+/// does not offer JSON output for every command the enabled tools need.
+async fn check_contract(backend: &MostroCliBackend, allow_writes: bool) -> anyhow::Result<()> {
+    let run = backend
+        .run(vec!["schema".to_string()])
+        .await
+        .context("could not run `mostro-cli schema` to check the installed version")?;
+    let schema = Outcome::parse(&run.stdout, run.code).map_err(|reason| {
+        anyhow::anyhow!(
+            "the installed mostro-cli does not answer `schema` with a JSON outcome ({reason}); \
+             it predates the JSON interface this server needs: {}",
+            run.stderr.trim()
+        )
+    })?;
+    contract::verify(&schema, &contract::required(allow_writes))?;
+    tracing::info!("mostro-cli offers the JSON commands this server needs");
     Ok(())
 }

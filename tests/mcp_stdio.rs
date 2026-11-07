@@ -15,18 +15,48 @@ use serde_json::{Value, json};
 
 const NODE: &str = "724497f34e6c4f55f9aa90f5e9dcc326c76a9f2ed817b0f0eb940ee7218ac8d5";
 
-/// Prints its arguments and the node config it was handed, one per line.
+const OUTCOMES: &str = include_str!("fixtures/outcomes.json");
+
+/// A stand-in `mostro-cli`. It answers `schema` with the contract fixture; any
+/// other command with `reply.json` (printed as is, ending with the exit code in
+/// `reply.code`) when the test wrote one, else with an `ok` document that
+/// echoes the arguments and the node configuration it was handed.
 fn fake_cli(dir: &tempfile::TempDir) -> PathBuf {
+    let outcomes: Value = serde_json::from_str(OUTCOMES).unwrap();
+    std::fs::write(
+        dir.path().join("schema.json"),
+        outcomes["schema"]["stdout"].to_string(),
+    )
+    .unwrap();
     let path = dir.path().join("mostro-cli");
     std::fs::write(
         &path,
         "#!/bin/sh\n\
-         echo \"FAKE mostro-cli node=$MOSTRO_PUBKEY relays=$RELAYS admin=${ADMIN_NSEC:-none} other=${SOME_OTHER_SECRET:-none}\"\n\
-         for a in \"$@\"; do printf 'arg:%s\\n' \"$a\"; done\n",
+         here=$(dirname \"$0\")\n\
+         if [ \"$2\" = schema ]; then cat \"$here/schema.json\"; exit 0; fi\n\
+         if [ -f \"$here/reply.json\" ]; then cat \"$here/reply.json\"; exit \"$(cat \"$here/reply.code\")\"; fi\n\
+         args=''; for a in \"$@\"; do args=\"$args\\\"$a\\\",\"; done\n\
+         printf '{\"schema_version\":\"1\",\"command\":\"echo\",\"status\":\"ok\",\"data\":{\"node\":\"%s\",\"relays\":\"%s\",\"admin\":\"%s\",\"other\":\"%s\",\"args\":[%s\"end\"]},\"error\":null,\"warnings\":[],\"meta\":{}}\\n' \\\n\
+           \"$MOSTRO_PUBKEY\" \"$RELAYS\" \"${ADMIN_NSEC:-none}\" \"${SOME_OTHER_SECRET:-none}\" \"$args\"\n",
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
+}
+
+/// Make the fake CLI answer every other command with the fixture `name`.
+fn answer_with(dir: &tempfile::TempDir, name: &str) {
+    let outcomes: Value = serde_json::from_str(OUTCOMES).unwrap();
+    std::fs::write(
+        dir.path().join("reply.json"),
+        outcomes[name]["stdout"].to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("reply.code"),
+        outcomes[name]["exit_code"].to_string(),
+    )
+    .unwrap();
 }
 
 async fn connect(cli: &Path, allow_writes: bool) -> RunningService<RoleClient, ()> {
@@ -69,7 +99,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-async fn a_client_discovers_four_typed_tools() {
+async fn a_client_discovers_twelve_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -90,14 +120,39 @@ async fn a_client_discovers_four_typed_tools() {
     names.sort();
     assert_eq!(
         names,
-        ["create_order", "get_order", "list_orders", "take_order"]
+        [
+            "add_bond_invoice",
+            "add_invoice",
+            "cancel",
+            "create_order",
+            "fiat_sent",
+            "get_order",
+            "list_messages",
+            "list_my_orders",
+            "list_orders",
+            "release",
+            "sync_orders",
+            "take_order"
+        ]
     );
 
     let take = tools.iter().find(|t| t.name == "take_order").unwrap();
     let schema = serde_json::to_value(&take.input_schema).unwrap();
     assert_eq!(schema["required"], json!(["order_id", "order_kind"]));
+    let release = tools.iter().find(|t| t.name == "release").unwrap();
+    let schema = serde_json::to_value(&release.input_schema).unwrap();
+    assert_eq!(schema["required"], json!(["order_id", "fiat_received"]));
 
     client.cancel().await.unwrap();
+}
+
+/// The `data` of the document a tool returned.
+fn data_of(result: &CallToolResult) -> Value {
+    result
+        .structured_content
+        .clone()
+        .expect("structured content")["data"]
+        .clone()
 }
 
 #[tokio::test]
@@ -113,18 +168,28 @@ async fn list_orders_reaches_the_cli_with_the_node_config_and_nothing_else() {
     .await;
 
     assert_ne!(result.is_error, Some(true), "{}", text(&result));
-    let out = text(&result);
-    assert!(out.contains(&format!("node={NODE}")), "{out}");
-    assert!(out.contains("relays=ws://localhost:7000"), "{out}");
-    assert!(out.contains("admin=none"), "{out}");
-    assert!(
-        out.contains("other=none"),
-        "only the node config reaches the CLI: {out}"
+    let data = data_of(&result);
+    assert_eq!(data["node"], NODE);
+    assert_eq!(data["relays"], "ws://localhost:7000");
+    assert_eq!(data["admin"], "none");
+    assert_eq!(
+        data["other"], "none",
+        "only the node config reaches the CLI"
     );
-    assert!(
-        out.contains("arg:listorders\narg:--kind=sell\narg:--currency=USD"),
-        "{out}"
+    assert_eq!(
+        data["args"],
+        json!([
+            "--output=json",
+            "order",
+            "list",
+            "--side=sell",
+            "--currency=USD",
+            "end"
+        ])
     );
+    // The text block is the same document.
+    let from_text: Value = serde_json::from_str(&text(&result)).unwrap();
+    assert_eq!(from_text, result.structured_content.clone().unwrap());
     client.cancel().await.unwrap();
 }
 
@@ -145,8 +210,162 @@ async fn writes_are_refused_unless_the_server_opted_in() {
     let writable = connect(&fake_cli(&dir), true).await;
     let taken = call(&writable, "take_order", take).await;
     assert_ne!(taken.is_error, Some(true), "{}", text(&taken));
-    assert!(text(&taken).contains("arg:takesell"));
+    assert_eq!(data_of(&taken)["args"][2], "take-sell");
     writable.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_three_statuses_reach_the_agent_as_a_result_an_error_and_a_warned_error() {
+    for (fixture, error, starts_with, contains) in [
+        ("list_empty", false, "{", "order.list"),
+        ("release_node_refused", true, "{", "invalid_peer"),
+        ("release_uncertain", true, "UNCERTAIN", "reply_timeout"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = fake_cli(&dir);
+        answer_with(&dir, fixture);
+        let client = connect(&cli, false).await;
+
+        let result = call(&client, "list_orders", json!({})).await;
+
+        assert_eq!(result.is_error == Some(true), error, "{fixture}");
+        let body = text(&result);
+        assert!(body.starts_with(starts_with), "{fixture}: {body}");
+        assert!(body.contains(contains), "{fixture}: {body}");
+        assert!(result.structured_content.is_some(), "{fixture}");
+        client.cancel().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_write_confirms_for_the_cli_and_an_uncertain_take_warns_without_retrying() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    let client = connect(&cli, true).await;
+    let created = call(
+        &client,
+        "create_order",
+        json!({"kind": "sell", "fiat_code": "usd", "fiat_amount_min": 50,
+               "fiat_amount_max": 150, "payment_method": "bank transfer"}),
+    )
+    .await;
+    assert_ne!(created.is_error, Some(true), "{}", text(&created));
+    let args = data_of(&created)["args"].clone();
+    assert_eq!(args[1], "order");
+    assert_eq!(args[2], "new");
+    assert_eq!(
+        args.as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| *a == "--yes")
+            .count(),
+        1
+    );
+    assert!(
+        args.as_array()
+            .unwrap()
+            .contains(&json!("--fiat-amount-max=150"))
+    );
+    client.cancel().await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    answer_with(&dir, "take_uncertain");
+    let client = connect(&cli, true).await;
+    let taken = call(
+        &client,
+        "take_order",
+        json!({"order_id": "ffdc768a-37d8-429e-bfcc-0968be56b6f9", "order_kind": "sell"}),
+    )
+    .await;
+    assert_eq!(taken.is_error, Some(true));
+    assert!(text(&taken).starts_with("UNCERTAIN"), "{}", text(&taken));
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serving() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    std::fs::write(dir.path().join("reply.json"), "📋 List Orders\n(table)\n").unwrap();
+    std::fs::write(dir.path().join("reply.code"), "0").unwrap();
+    let client = connect(&cli, false).await;
+
+    let result = call(&client, "list_orders", json!({})).await;
+
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("not one JSON outcome document"),
+        "{}",
+        text(&result)
+    );
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cli_that_lacks_the_json_commands_stops_the_server_with_the_missing_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    // The fixture without order.take-buy.
+    let outcomes: Value = serde_json::from_str(OUTCOMES).unwrap();
+    let mut schema = outcomes["schema"]["stdout"].clone();
+    schema["data"]["commands"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["name"] != "order.take-buy");
+    std::fs::write(dir.path().join("schema.json"), schema.to_string()).unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", &cli)
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .env("MOSTRO_MCP_ALLOW_WRITES", "true")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a normal error exit, not a panic"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("mostro-cli does not offer JSON output for:"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("order.take-buy"), "{stderr}");
+    assert!(
+        !stderr.contains("order.take-sell"),
+        "only what is missing: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn a_cli_that_does_not_know_schema_stops_the_server_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("mostro-cli");
+    std::fs::write(
+        &old,
+        "#!/bin/sh\necho 'error: unrecognized subcommand' >&2\nexit 2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", &old)
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("predates the JSON interface"), "{stderr}");
 }
 
 #[tokio::test]
@@ -159,6 +378,137 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("is not an order id"));
 
     // The server is still serving afterwards.
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 4);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = connect(&fake_cli(&dir), true).await;
+    let id = "ffdc768a-37d8-429e-bfcc-0968be56b6f9";
+
+    for (tool, args, expected) in [
+        ("list_my_orders", json!({}), vec!["order", "mine"]),
+        (
+            "list_messages",
+            json!({"order_id": id, "since_minutes": 60}),
+            vec![
+                "message",
+                "list",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--since=60",
+            ],
+        ),
+        (
+            "add_invoice",
+            json!({"order_id": id, "invoice": "lnbcrt1pexample"}),
+            vec![
+                "order",
+                "add-invoice",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--invoice=lnbcrt1pexample",
+                "--yes",
+            ],
+        ),
+        (
+            "fiat_sent",
+            json!({"order_id": id}),
+            vec![
+                "order",
+                "fiat-sent",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--yes",
+            ],
+        ),
+        (
+            "release",
+            json!({"order_id": id, "fiat_received": true}),
+            vec![
+                "order",
+                "release",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--yes",
+            ],
+        ),
+        (
+            "add_bond_invoice",
+            json!({"order_id": id, "invoice": "lnbcrt1pbond"}),
+            vec![
+                "bond",
+                "add-invoice",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--invoice=lnbcrt1pbond",
+                "--yes",
+            ],
+        ),
+        (
+            "cancel",
+            json!({"order_id": id}),
+            vec![
+                "order",
+                "cancel",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--yes",
+            ],
+        ),
+        ("sync_orders", json!({}), vec!["order", "sync"]),
+    ] {
+        let result = call(&client, tool, args).await;
+        assert_ne!(result.is_error, Some(true), "{tool}: {}", text(&result));
+        let mut want = vec![json!("--output=json")];
+        want.extend(expected.into_iter().map(|a| json!(a)));
+        want.push(json!("end"));
+        assert_eq!(data_of(&result)["args"], json!(want), "{tool}");
+    }
+
+    let refused = call(
+        &client,
+        "release",
+        json!({"order_id": id, "fiat_received": false}),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        text(&refused).contains("fiat_received"),
+        "{}",
+        text(&refused)
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
+    for (fixture, tool, args, contains) in [
+        (
+            "messages_identity_missing",
+            "list_messages",
+            json!({}),
+            "identity_missing",
+        ),
+        (
+            "mine_newest_first",
+            "list_my_orders",
+            json!({}),
+            "order.mine",
+        ),
+        (
+            "bond_invoice_accepted",
+            "add_bond_invoice",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001", "invoice": "lnbcrt1p"}),
+            "invoice_accepted",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = fake_cli(&dir);
+        answer_with(&dir, fixture);
+        let client = connect(&cli, true).await;
+        let result = call(&client, tool, args).await;
+        assert!(
+            text(&result).contains(contains),
+            "{fixture}: {}",
+            text(&result)
+        );
+        client.cancel().await.unwrap();
+    }
 }

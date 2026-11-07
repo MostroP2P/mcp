@@ -2,8 +2,8 @@
 # (sha256 from the release's manifest.txt, signed by the maintainers).
 FROM debian:bookworm-slim
 
-ARG MOSTROD_VERSION=v0.19.3
-ARG MOSTROD_SHA256=db5113f94ad4e9f63cba168695247454dbad2a4dabc20b11787ce1c8774afcb1
+ARG MOSTROD_VERSION=v0.20.2
+ARG MOSTROD_SHA256=2d11a6940dd2d76742a903dbe7cfe82325421fdef016721fecf28f54e1d4773d
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \

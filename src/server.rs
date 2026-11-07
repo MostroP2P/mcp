@@ -1,4 +1,4 @@
-//! The MCP server: four tools over a [`CliRunner`].
+//! The MCP server: the Mostro tools over a [`CliRunner`].
 
 use std::sync::Arc;
 
@@ -11,11 +11,17 @@ use rmcp::{
 
 use crate::cli_backend::CliRunner;
 use crate::error::{Error, Result as MostroResult};
+use crate::outcome::{Outcome, UNCERTAIN_WARNING, excerpt};
 use crate::tools::{
+    add_invoice::{self, AddInvoiceParams},
     create_order::{self, CreateOrderParams},
     get_order::{self, GetOrderParams},
+    list_messages::{self, ListMessagesParams},
+    list_my_orders,
     list_orders::{self, ListOrdersParams},
+    sync_orders::{self, SyncOrdersParams},
     take_order::{self, TakeOrderParams},
+    trade_step::{self, OrderStepParams, ReleaseParams},
 };
 
 const INSTRUCTIONS: &str = "\
@@ -26,12 +32,29 @@ Sides: an order is named by its maker. A `sell` order sells sats: taking it \
 means you BUY sats and pay fiat. A `buy` order buys sats: taking it means you \
 SELL sats, and you will be asked to pay a Lightning hold invoice.
 
-list_orders and get_order only read. create_order and take_order commit the \
-user to a trade: confirm the exact order, side and amounts with the user \
-before calling them. This server refuses them unless it was started with \
-MOSTRO_MCP_ALLOW_WRITES=true.
+Reading changes nothing: list_orders (the public book), get_order (the node's \
+record of an order of yours), list_my_orders (the orders this identity holds \
+locally, no network) and list_messages (what the node asked you: the next \
+step, with any invoice to pay as data).
 
-Results are mostro-cli's text output.";
+Every other tool is STATE-CHANGING and commits the user: confirm the exact \
+order, side and amounts with the user before calling it. This server refuses \
+them unless it was started with MOSTRO_MCP_ALLOW_WRITES=true. A trade runs: \
+create_order or take_order; then, as list_messages asks, add_invoice (the \
+buyer's invoice for the sats) or a payment by the user; fiat_sent (the buyer, \
+once the fiat went out); release (the seller, only once the user confirms the \
+fiat arrived; irreversible). cancel withdraws an order or a trade; \
+add_bond_invoice claims a share of a slashed bond; sync_orders adopts orders \
+the node created for this identity (the next order of a range).
+
+These tools never pay an invoice. When the node asks for a payment (a hold \
+invoice, a bond), give the invoice to the user to pay from their own wallet, \
+then follow with list_messages.
+
+Every result is the JSON outcome document of mostro-cli: `status` (`ok`, `error` or \
+`uncertain`), `data` (with `next_step` where the node asks the user for something), \
+`error` and `warnings`. An `uncertain` result means the request may have reached the \
+node: never retry it, check the state first (get_order, list_my_orders, list_messages).";
 
 pub struct MostroServer<R: CliRunner> {
     runner: Arc<R>,
@@ -111,7 +134,8 @@ impl<R: CliRunner> MostroServer<R> {
             hold invoice). fiat_amount only for range orders. Refused unless the \
             server runs with MOSTRO_MCP_ALLOW_WRITES=true. If it reports an error, \
             do NOT retry blindly: the node may have accepted the take (mostro-cli \
-            can fail after the node answered). Check get_order or list_orders first.",
+            can fail after the node answered). Check list_my_orders, get_order or \
+            list_messages first. Next: list_messages says what the node asks.",
         annotations(
             title = "Take order",
             read_only_hint = false,
@@ -123,29 +147,207 @@ impl<R: CliRunner> MostroServer<R> {
     async fn take_order(&self, Parameters(params): Parameters<TakeOrderParams>) -> CallToolResult {
         self.execute_write(|| take_order::args(&params)).await
     }
+
+    #[tool(
+        description = "List the orders this identity holds in mostro-cli's local store \
+            (made, taken or adopted), newest first, with their local status. Offline: \
+            reads no relay. Use it to find your order ids, and to check what happened \
+            after an `uncertain` create_order or take_order.",
+        annotations(
+            title = "List my orders",
+            read_only_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_my_orders(&self) -> CallToolResult {
+        self.execute(Ok(list_my_orders::args())).await
+    }
+
+    #[tool(
+        description = "Read what the node said about this identity's trades, newest \
+            first: each message's action and `next_step` (pay an invoice, add an \
+            invoice, send the fiat, wait), with any invoice to pay as data. Filter by \
+            order_id; since_minutes reads further back (default 30, at most 10080). \
+            Call it after every state-changing tool to learn the next step.",
+        annotations(title = "List messages", read_only_hint = true, open_world_hint = true)
+    )]
+    async fn list_messages(
+        &self,
+        Parameters(params): Parameters<ListMessagesParams>,
+    ) -> CallToolResult {
+        self.execute(list_messages::args(&params)).await
+    }
+
+    #[tool(
+        description = "Send the invoice the node asked for (`next_step` `add_invoice`): \
+            the buyer's BOLT11 invoice or Lightning address for the sats. \
+            STATE-CHANGING: confirm with the user first. Refused unless the server runs \
+            with MOSTRO_MCP_ALLOW_WRITES=true. Then call list_messages.",
+        annotations(
+            title = "Add invoice",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn add_invoice(
+        &self,
+        Parameters(params): Parameters<AddInvoiceParams>,
+    ) -> CallToolResult {
+        self.execute_write(|| add_invoice::args(&params)).await
+    }
+
+    #[tool(
+        description = "Claim your share of a slashed bond (`next_step` \
+            `add_bond_invoice`): a BOLT11 invoice for exactly the share list_messages \
+            reports. STATE-CHANGING: confirm with the user first. Refused unless the \
+            server runs with MOSTRO_MCP_ALLOW_WRITES=true.",
+        annotations(
+            title = "Add bond invoice",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn add_bond_invoice(
+        &self,
+        Parameters(params): Parameters<AddInvoiceParams>,
+    ) -> CallToolResult {
+        self.execute_write(|| add_invoice::bond_args(&params)).await
+    }
+
+    #[tool(
+        description = "Tell the seller that the fiat was sent (the buyer's step). \
+            STATE-CHANGING: only once the user confirms they sent the fiat. Refused \
+            unless the server runs with MOSTRO_MCP_ALLOW_WRITES=true. Then call \
+            list_messages.",
+        annotations(
+            title = "Fiat sent",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn fiat_sent(&self, Parameters(params): Parameters<OrderStepParams>) -> CallToolResult {
+        self.execute_write(|| trade_step::fiat_sent_args(&params))
+            .await
+    }
+
+    #[tool(
+        description = "Release the sats to the buyer (the seller's step). IRREVERSIBLE \
+            and STATE-CHANGING: only once the user confirms the fiat arrived in their \
+            account, which fiat_received=true states (set it only after the user said so \
+            in this conversation); anything else is refused. \
+            Refused unless the server runs with MOSTRO_MCP_ALLOW_WRITES=true. On \
+            `uncertain`, never retry: check get_order and list_messages.",
+        annotations(
+            title = "Release",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn release(&self, Parameters(params): Parameters<ReleaseParams>) -> CallToolResult {
+        self.execute_write(|| trade_step::release_args(&params))
+            .await
+    }
+
+    #[tool(
+        description = "Cancel an order: a pending order of yours is withdrawn; in a \
+            running trade it asks the counterparty for a cooperative cancel. \
+            STATE-CHANGING: confirm with the user first. Refused unless the server runs \
+            with MOSTRO_MCP_ALLOW_WRITES=true. Then call list_messages.",
+        annotations(
+            title = "Cancel",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn cancel(&self, Parameters(params): Parameters<OrderStepParams>) -> CallToolResult {
+        self.execute_write(|| trade_step::cancel_args(&params))
+            .await
+    }
+
+    #[tool(
+        description = "Adopt the orders the node created for this identity that the \
+            local store lacks, such as the next order of a range after a release. \
+            Saves them in mostro-cli's store (STATE-CHANGING locally; nothing is sent \
+            to the node). since_minutes: how far back, default and maximum 10080. \
+            Refused unless the server runs with MOSTRO_MCP_ALLOW_WRITES=true.",
+        annotations(
+            title = "Sync orders",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn sync_orders(
+        &self,
+        Parameters(params): Parameters<SyncOrdersParams>,
+    ) -> CallToolResult {
+        self.execute_local_write(|| sync_orders::args(&params))
+            .await
+    }
 }
 
 impl<R: CliRunner> MostroServer<R> {
-    /// Runs the CLI with `args` when they were built; every failure becomes a
-    /// tool error the agent can read.
+    /// Runs a read-only tool's command.
     async fn execute(&self, args: MostroResult<Vec<String>>) -> CallToolResult {
+        self.run_tool(args, false).await
+    }
+
+    /// Runs the CLI with `args` when they were built; every failure becomes a
+    /// tool error the agent can read. A command that sends to the node and
+    /// timed out, or whose output cannot be read, did run, so it may have
+    /// reached the node: that error starts with the same no-retry warning as an
+    /// `uncertain` outcome.
+    async fn run_tool(
+        &self,
+        args: MostroResult<Vec<String>>,
+        may_reach_node: bool,
+    ) -> CallToolResult {
         let args = match args {
             Ok(args) => args,
             Err(error) => return tool_error(&error),
         };
         let command = args.first().cloned().unwrap_or_default();
         match self.runner.run(args).await {
-            Ok(output) => {
-                tracing::info!(%command, "mostro-cli finished");
-                let text = if output.stdout.trim().is_empty() {
-                    "mostro-cli finished without output.".to_string()
-                } else {
-                    output.stdout
-                };
-                CallToolResult::success(vec![ContentBlock::text(text)])
-            }
+            Ok(run) => match Outcome::parse(&run.stdout, run.code) {
+                Ok(outcome) => {
+                    tracing::info!(%command, status = ?outcome.status(), "mostro-cli finished");
+                    outcome.into_tool_result()
+                }
+                Err(reason) => {
+                    tracing::warn!(%command, %reason, "mostro-cli output not usable");
+                    let status = run
+                        .code
+                        .map_or("it was stopped by a signal".to_string(), |code| {
+                            format!("exit status: {code}")
+                        });
+                    let text = error_text(&Error::CliFailed {
+                        status: format!("{status}; {reason}"),
+                        stderr: run.stderr,
+                        stdout: excerpt(&run.stdout),
+                    });
+                    if may_reach_node {
+                        warned_error(&text)
+                    } else {
+                        CallToolResult::error(vec![ContentBlock::text(text)])
+                    }
+                }
+            },
             Err(error) => {
                 tracing::warn!(%command, %error, "mostro-cli failed");
+                if may_reach_node && matches!(error, Error::Timeout(_)) {
+                    return warned_error(&error_text(&error));
+                }
                 tool_error(&error)
             }
         }
@@ -157,21 +359,48 @@ impl<R: CliRunner> MostroServer<R> {
         &self,
         build: impl FnOnce() -> MostroResult<Vec<String>>,
     ) -> CallToolResult {
+        self.gated(build, true).await
+    }
+
+    /// The write gate for a tool that only writes the CLI's local store
+    /// (`sync_orders`): nothing reaches the node, so a failure is not warned.
+    async fn execute_local_write(
+        &self,
+        build: impl FnOnce() -> MostroResult<Vec<String>>,
+    ) -> CallToolResult {
+        self.gated(build, false).await
+    }
+
+    async fn gated(
+        &self,
+        build: impl FnOnce() -> MostroResult<Vec<String>>,
+        may_reach_node: bool,
+    ) -> CallToolResult {
         if !self.allow_writes {
             return tool_error(&Error::WritesDisabled);
         }
-        self.execute(build()).await
+        self.run_tool(build(), may_reach_node).await
     }
 }
 
+/// A tool error that starts with the no-retry warning.
+fn warned_error(text: &str) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "{UNCERTAIN_WARNING}\n\n{text}"
+    ))])
+}
+
 fn tool_error(error: &Error) -> CallToolResult {
-    let text = match error {
+    CallToolResult::error(vec![ContentBlock::text(error_text(error))])
+}
+
+fn error_text(error: &Error) -> String {
+    match error {
         Error::CliFailed { stdout, .. } if !stdout.trim().is_empty() => {
             format!("{error}\n\nmostro-cli output:\n{stdout}")
         }
         _ => error.to_string(),
-    };
-    CallToolResult::error(vec![ContentBlock::text(text)])
+    }
 }
 
 #[tool_handler]
@@ -188,17 +417,23 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::cli_backend::CliOutput;
-    use crate::tools::OrderKind;
+    use crate::cli_backend::CliRun;
+    use crate::tools::{
+        OrderKind,
+        add_invoice::AddInvoiceParams,
+        list_messages::ListMessagesParams,
+        sync_orders::SyncOrdersParams,
+        trade_step::{OrderStepParams, ReleaseParams},
+    };
 
     /// Records every argument vector and answers with a canned result.
     struct FakeCli {
         calls: Mutex<Vec<Vec<String>>>,
-        reply: fn() -> MostroResult<CliOutput>,
+        reply: fn() -> MostroResult<CliRun>,
     }
 
     impl FakeCli {
-        fn answering(reply: fn() -> MostroResult<CliOutput>) -> Self {
+        fn answering(reply: fn() -> MostroResult<CliRun>) -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
                 reply,
@@ -207,17 +442,26 @@ mod tests {
     }
 
     impl CliRunner for Arc<FakeCli> {
-        async fn run(&self, args: Vec<String>) -> MostroResult<CliOutput> {
+        async fn run(&self, args: Vec<String>) -> MostroResult<CliRun> {
             self.calls.lock().unwrap().push(args);
             (self.reply)()
         }
     }
 
-    fn ok_output() -> MostroResult<CliOutput> {
-        Ok(CliOutput {
-            stdout: "📋 List Orders\n(table)".into(),
+    const OUTCOMES: &str = include_str!("../tests/fixtures/outcomes.json");
+
+    /// A fixture of the CLI's own documents as a finished run.
+    fn run_of(name: &str) -> MostroResult<CliRun> {
+        let all: serde_json::Value = serde_json::from_str(OUTCOMES).unwrap();
+        Ok(CliRun {
+            stdout: all[name]["stdout"].to_string(),
             stderr: String::new(),
+            code: Some(i32::try_from(all[name]["exit_code"].as_i64().unwrap()).unwrap()),
         })
+    }
+
+    fn ok_output() -> MostroResult<CliRun> {
+        run_of("list_empty")
     }
 
     fn server(allow_writes: bool) -> (MostroServer<Arc<FakeCli>>, Arc<FakeCli>) {
@@ -249,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_four_tools_with_honest_read_only_hints() {
+    fn twelve_tools_with_honest_read_only_hints() {
         let (server, _) = server(false);
         let mut tools: Vec<_> = server
             .tool_router
@@ -264,10 +508,112 @@ mod tests {
         assert_eq!(
             tools,
             [
+                ("add_bond_invoice".to_string(), Some(false)),
+                ("add_invoice".to_string(), Some(false)),
+                ("cancel".to_string(), Some(false)),
                 ("create_order".to_string(), Some(false)),
+                ("fiat_sent".to_string(), Some(false)),
                 ("get_order".to_string(), Some(true)),
+                ("list_messages".to_string(), Some(true)),
+                ("list_my_orders".to_string(), Some(true)),
                 ("list_orders".to_string(), Some(true)),
+                ("release".to_string(), Some(false)),
+                ("sync_orders".to_string(), Some(false)),
                 ("take_order".to_string(), Some(false)),
+            ]
+        );
+    }
+
+    const ID: &str = "ffdc768a-37d8-429e-bfcc-0968be56b6f9";
+
+    fn step() -> OrderStepParams {
+        OrderStepParams {
+            order_id: ID.into(),
+        }
+    }
+
+    fn invoice() -> AddInvoiceParams {
+        AddInvoiceParams {
+            order_id: ID.into(),
+            invoice: "lnbcrt1pexample".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_trade_step_is_refused_by_default_without_spawning_the_cli() {
+        let (server, cli) = server(false);
+        let release = ReleaseParams {
+            order_id: ID.into(),
+            fiat_received: true,
+        };
+        for result in [
+            server.add_invoice(Parameters(invoice())).await,
+            server.add_bond_invoice(Parameters(invoice())).await,
+            server.fiat_sent(Parameters(step())).await,
+            server.release(Parameters(release)).await,
+            server.cancel(Parameters(step())).await,
+            server
+                .sync_orders(Parameters(SyncOrdersParams::default()))
+                .await,
+        ] {
+            assert_eq!(result.is_error, Some(true));
+            assert!(text_of(&result).contains("MOSTRO_MCP_ALLOW_WRITES=true"));
+        }
+        assert!(cli.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn release_without_fiat_received_never_spawns_the_cli() {
+        let (server, cli) = server(true);
+        let result = server
+            .release(Parameters(ReleaseParams {
+                order_id: ID.into(),
+                fiat_received: false,
+            }))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("fiat_received"));
+        assert!(cli.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_new_tools_run_their_commands() {
+        let (server, cli) = server(true);
+        server.list_my_orders().await;
+        server
+            .list_messages(Parameters(ListMessagesParams::default()))
+            .await;
+        server.add_invoice(Parameters(invoice())).await;
+        server.add_bond_invoice(Parameters(invoice())).await;
+        server.fiat_sent(Parameters(step())).await;
+        server
+            .release(Parameters(ReleaseParams {
+                order_id: ID.into(),
+                fiat_received: true,
+            }))
+            .await;
+        server.cancel(Parameters(step())).await;
+        server
+            .sync_orders(Parameters(SyncOrdersParams::default()))
+            .await;
+        let commands: Vec<String> = cli
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|args| args[..2].join(" "))
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "order mine",
+                "message list",
+                "order add-invoice",
+                "bond add-invoice",
+                "order fiat-sent",
+                "order release",
+                "order cancel",
+                "order sync"
             ]
         );
     }
@@ -282,8 +628,17 @@ mod tests {
             }))
             .await;
         assert_ne!(result.is_error, Some(true));
-        assert!(text_of(&result).contains("List Orders"));
-        assert_eq!(*cli.calls.lock().unwrap(), [["listorders", "--kind=sell"]]);
+        let document = result
+            .structured_content
+            .clone()
+            .expect("structured content");
+        assert_eq!(document["command"], "order.list");
+        assert_eq!(document["status"], "ok");
+        assert!(text_of(&result).contains("\"order.list\""));
+        assert_eq!(
+            *cli.calls.lock().unwrap(),
+            [["order", "list", "--side=sell"]]
+        );
     }
 
     #[tokio::test]
@@ -310,7 +665,7 @@ mod tests {
         let (server, cli) = server(true);
         let result = server.create_order(Parameters(sell_order())).await;
         assert_ne!(result.is_error, Some(true));
-        assert_eq!(cli.calls.lock().unwrap()[0][0], "neworder");
+        assert_eq!(cli.calls.lock().unwrap()[0][..2], ["order", "new"]);
     }
 
     #[tokio::test]
@@ -327,12 +682,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cli_failure_is_a_readable_tool_error() {
+    async fn an_error_outcome_is_a_tool_error_with_the_nodes_reason() {
+        let cli = Arc::new(FakeCli::answering(|| run_of("release_node_refused")));
+        let server = MostroServer::new(Arc::clone(&cli), false);
+        let result = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let body = text_of(&result);
+        assert!(
+            body.contains("node_refused") && body.contains("invalid_peer"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_uncertain_outcome_tells_the_agent_not_to_retry() {
+        let cli = Arc::new(FakeCli::answering(|| run_of("take_uncertain")));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let result = server.create_order(Parameters(sell_order())).await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    }
+
+    #[tokio::test]
+    async fn output_that_is_not_an_outcome_is_a_readable_tool_error_with_the_clis_stderr() {
         let cli = Arc::new(FakeCli::answering(|| {
-            Err(Error::CliFailed {
-                status: "exit status: 1".into(),
+            Ok(CliRun {
+                stdout: "not a document".into(),
                 stderr: "RELAYS not set".into(),
-                stdout: String::new(),
+                code: Some(1),
             })
         }));
         let server = MostroServer::new(Arc::clone(&cli), false);
@@ -340,6 +719,101 @@ mod tests {
             .list_orders(Parameters(ListOrdersParams::default()))
             .await;
         assert_eq!(result.is_error, Some(true));
-        assert!(text_of(&result).contains("RELAYS not set"));
+        let body = text_of(&result);
+        assert!(
+            body.contains("RELAYS not set") && body.contains("not one JSON"),
+            "{body}"
+        );
+        assert!(body.contains("not a document"), "the excerpt: {body}");
+    }
+
+    #[tokio::test]
+    async fn unreadable_output_of_a_write_is_warned_like_an_uncertain_one() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Ok(CliRun {
+                stdout: "not a document".into(),
+                stderr: String::new(),
+                code: Some(1),
+            })
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let created = server.create_order(Parameters(sell_order())).await;
+        assert_eq!(created.is_error, Some(true));
+        let body = text_of(&created);
+        assert!(
+            body.starts_with(crate::outcome::UNCERTAIN_WARNING),
+            "{body}"
+        );
+        assert!(body.contains("not one JSON"), "{body}");
+        // A read changes nothing on the node: no warning.
+        let listed = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert!(!text_of(&listed).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_write_is_warned_and_a_timed_out_read_is_not() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Err(Error::Timeout(std::time::Duration::from_secs(60)))
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let sent = server.fiat_sent(Parameters(step())).await;
+        assert_eq!(sent.is_error, Some(true));
+        let body = text_of(&sent);
+        assert!(
+            body.starts_with(crate::outcome::UNCERTAIN_WARNING),
+            "{body}"
+        );
+        assert!(body.contains("list_my_orders"), "{body}");
+        let listed = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert!(!text_of(&listed).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    }
+
+    #[tokio::test]
+    async fn sync_orders_sends_nothing_to_the_node_so_it_is_not_warned() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Ok(CliRun {
+                stdout: "not a document".into(),
+                stderr: String::new(),
+                code: Some(1),
+            })
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let synced = server
+            .sync_orders(Parameters(SyncOrdersParams::default()))
+            .await;
+        assert_eq!(synced.is_error, Some(true));
+        assert!(!text_of(&synced).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    }
+
+    #[tokio::test]
+    async fn a_document_that_disagrees_with_the_exit_status_is_not_believed() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            let mut run = run_of("list_empty")?;
+            run.code = Some(1);
+            Ok(run)
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), false);
+        let result = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("exit status"));
+    }
+
+    #[tokio::test]
+    async fn a_runner_failure_is_a_readable_tool_error() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Err(Error::CliNotFound("/x/mostro-cli".into()))
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), false);
+        let result = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("MOSTRO_CLI_PATH"));
     }
 }

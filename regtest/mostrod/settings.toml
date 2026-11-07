@@ -1,4 +1,4 @@
-# mostrod v0.19.3 settings for the regtest network (from its settings.tpl.toml).
+# mostrod v0.20.2 settings for the regtest network (from its settings.tpl.toml).
 # Only what regtest needs differs from the template; omitted keys take their
 # defaults.
 

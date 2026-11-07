@@ -1,14 +1,19 @@
-//! The four tools, each as a typed parameter struct plus a pure function that
+//! The tools, each as a typed parameter struct plus a pure function that
 //! turns it into `mostro-cli` arguments. Building is kept apart from running so
 //! every rule here is unit-tested without a node.
 //!
 //! Arguments are always passed as `--flag=value`: a value that starts with `-`
 //! then stays a value and can never be read by the CLI as another flag.
 
+pub mod add_invoice;
 pub mod create_order;
 pub mod get_order;
+pub mod list_messages;
+pub mod list_my_orders;
 pub mod list_orders;
+pub mod sync_orders;
 pub mod take_order;
+pub mod trade_step;
 
 use std::fmt::Display;
 
@@ -40,8 +45,9 @@ pub(crate) fn flag(name: &str, value: impl Display) -> String {
     format!("--{name}={value}")
 }
 
-/// Longest invoice accepted, in characters: BOLT11 strings stay well under it.
-const MAX_INVOICE_CHARS: usize = 2048;
+/// Longest invoice accepted, in characters: room for a BOLT11 invoice with
+/// many route hints.
+const MAX_INVOICE_CHARS: usize = 4096;
 
 /// A fiat currency code: 3 to 5 ASCII letters, returned uppercase.
 pub(crate) fn fiat_code(field: &'static str, code: &str) -> Result<String> {
@@ -82,17 +88,55 @@ pub(crate) fn text(field: &'static str, value: &str, max: usize) -> Result<Strin
 pub(crate) fn invoice(field: &'static str, value: &str) -> Result<String> {
     let value = value.trim();
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-' | '+');
-    if value.is_empty()
-        || value.len() > MAX_INVOICE_CHARS
-        || value.starts_with('-')
-        || !value.chars().all(allowed)
-    {
+    if value.len() > MAX_INVOICE_CHARS {
+        return Err(invalid(
+            field,
+            format!("must be at most {MAX_INVOICE_CHARS} characters"),
+        ));
+    }
+    if value.is_empty() || value.starts_with('-') || !value.chars().all(allowed) {
         return Err(invalid(
             field,
             "expected a BOLT11 invoice or a Lightning address (user@domain)",
         ));
     }
     Ok(value.to_string())
+}
+
+/// A BOLT11 invoice only: [`invoice`] without the Lightning address.
+pub(crate) fn bolt11(field: &'static str, value: &str) -> Result<String> {
+    let value = invoice(field, value)?;
+    if value.contains('@') {
+        return Err(invalid(
+            field,
+            "expected a BOLT11 invoice, not a Lightning address",
+        ));
+    }
+    Ok(value)
+}
+
+/// The CLI's longest read window, in minutes (one week).
+const MAX_SINCE_MINUTES: u32 = 10_080;
+
+/// A read window in minutes, as `message list` and `order sync` take it.
+pub(crate) fn since_minutes(field: &'static str, minutes: u32) -> Result<u32> {
+    if !(1..=MAX_SINCE_MINUTES).contains(&minutes) {
+        return Err(invalid(
+            field,
+            format!("must be 1 to {MAX_SINCE_MINUTES} minutes (one week)"),
+        ));
+    }
+    Ok(minutes)
+}
+
+/// `order <step> --order=<id> --yes`: a trade step on one order.
+pub(crate) fn order_step(step: &str, field: &'static str, id: &str) -> Result<Vec<String>> {
+    Ok(vec![
+        "order".to_string(),
+        step.to_string(),
+        flag("order", order_id(field, id)?),
+        "--yes".to_string(),
+    ])
 }
 
 /// A positive amount the CLI can hold (it parses amounts as `i64`).
@@ -143,5 +187,28 @@ mod tests {
         assert!(invoice("i", "lnbc1 2").is_err());
         assert!(invoice("i", "$(whoami)").is_err());
         assert!(invoice("i", "").is_err());
+    }
+
+    #[test]
+    fn a_long_invoice_with_route_hints_fits_and_the_limit_is_named() {
+        let long = format!("lnbcrt1{}", "q".repeat(3000));
+        assert!(invoice("i", &long).is_ok());
+        let error = invoice("i", &"q".repeat(5000)).unwrap_err().to_string();
+        assert!(error.contains("characters"), "{error}");
+    }
+
+    #[test]
+    fn a_bolt11_invoice_is_not_a_lightning_address() {
+        assert!(bolt11("i", "lnbcrt10u1pjexample0").is_ok());
+        assert!(bolt11("i", "alice@getalby.com").is_err());
+        assert!(bolt11("i", "-").is_err());
+    }
+
+    #[test]
+    fn a_read_window_is_one_minute_to_one_week() {
+        assert_eq!(since_minutes("s", 1).unwrap(), 1);
+        assert_eq!(since_minutes("s", 10_080).unwrap(), 10_080);
+        assert!(since_minutes("s", 0).is_err());
+        assert!(since_minutes("s", 10_081).is_err());
     }
 }
