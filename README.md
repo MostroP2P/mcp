@@ -168,7 +168,7 @@ current releases no longer ship, and its settings predate the current daemon.
 regtest/devenv.sh up              # start, fund, open 4 channels, create Alice's and Bob's identities (idempotent)
 regtest/devenv.sh status
 eval "$(regtest/devenv.sh env alice)"   # point the CLI and the server at Alice
-cargo test --test regtest_e2e -- --ignored --test-threads=1   # the trades below, through MCP
+cargo test --test regtest_e2e -- --ignored --test-threads=1 --skip loses_the_bond   # the trades below, through MCP
 regtest/devenv.sh clean           # wipe everything, test identities included
 ```
 
@@ -177,8 +177,9 @@ taker bond of `regtest/mostrod/bonds.toml`: a taker pays a hold-invoice bond
 (1 % of the order, at least 1 000 sats) before the trade goes on, and loses it
 if they let a waiting state time out (60 s in this mode), the other party
 claiming half with `add_bond_invoice`. `regtest/devenv.sh up` without it goes
-back to no bonds. The e2e tests run in both modes; the slash test skips itself
-without bonds.
+back to no bonds. The e2e tests run in both modes, the slash test only with
+bonds: run without `--skip loses_the_bond` then. On a node without bonds it
+fails rather than pass without exercising anything.
 
 The node's key is the public `mostro-regtest` test key
 (`724497f3…218ac8d5`); the relay is `ws://localhost:7000`. `devenv.sh cli

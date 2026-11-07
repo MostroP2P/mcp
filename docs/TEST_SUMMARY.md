@@ -117,3 +117,5 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
 - **Runs**: without bonds 7 passed (the slash test skipped) in 39 s; with bonds 7 passed in 256 s. Checked outside the tests: Alice's
   500-sat share invoice is `SETTLED` and Bob's slashed 1 000-sat bond payment `SUCCEEDED`.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 89 + 11 passed, build.
+- **Review fix (CodeRabbit)**: without bonds the slash test passed without exercising anything, its skip note hidden by libtest. It now
+  fails on a node without bonds, and the no-bonds run leaves it out with `--skip loses_the_bond` (README and the test's header).

@@ -3,8 +3,13 @@
 //!
 //! ```text
 //! regtest/devenv.sh up
+//! cargo test --test regtest_e2e -- --ignored --test-threads=1 --skip loses_the_bond
+//! MOSTRO_BONDS=1 regtest/devenv.sh up
 //! cargo test --test regtest_e2e -- --ignored --test-threads=1
 //! ```
+//!
+//! The slash test needs the node with bonds: on one without, it fails rather
+//! than pass without exercising anything.
 //!
 //! Each test starts one server per test user, with the environment that
 //! `regtest/devenv.sh env <user>` prints (set `MOSTRO_CLI_PATH` when the CLI is
@@ -322,12 +327,11 @@ const SLASH_POLL_TRIES: u32 = 80;
 #[tokio::test]
 #[ignore = "needs the regtest network with bonds (MOSTRO_BONDS=1 regtest/devenv.sh up)"]
 async fn a_taker_who_never_sends_an_invoice_loses_the_bond_and_the_seller_claims_a_share() {
-    if !bonds_enabled() {
-        eprintln!(
-            "skipped: the node takes no bonds; start it with MOSTRO_BONDS=1 regtest/devenv.sh up"
-        );
-        return;
-    }
+    assert!(
+        bonds_enabled(),
+        "the node takes no bonds: start it with MOSTRO_BONDS=1 regtest/devenv.sh up, \
+         or leave this test out with --skip loses_the_bond"
+    );
     let alice = connect("alice", true).await;
     let bob = connect("bob", true).await;
     let created = ok(
