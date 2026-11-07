@@ -1,0 +1,16 @@
+
+# Appended by `MOSTRO_BONDS=1 devenv.sh up` (which also cuts the waiting
+# states to 60 s): the anti-abuse bond of mostrod v0.20.2 for takers, slashed
+# when the taker lets its waiting state time out. Regtest values.
+[anti_abuse_bond]
+enabled = true
+amount_pct = 0.01
+base_amount_sats = 1000
+apply_to = "take"
+slash_on_waiting_timeout = true
+slash_node_share_pct = 0.5
+payout_invoice_window_seconds = 300
+payout_max_retries = 5
+payout_claim_window_days = 15
+maker_bond_payment_timeout_seconds = 900
+bond_cltv_delta = 432
