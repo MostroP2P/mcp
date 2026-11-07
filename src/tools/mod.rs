@@ -45,8 +45,9 @@ pub(crate) fn flag(name: &str, value: impl Display) -> String {
     format!("--{name}={value}")
 }
 
-/// Longest invoice accepted, in characters: BOLT11 strings stay well under it.
-const MAX_INVOICE_CHARS: usize = 2048;
+/// Longest invoice accepted, in characters: room for a BOLT11 invoice with
+/// many route hints.
+const MAX_INVOICE_CHARS: usize = 4096;
 
 /// A fiat currency code: 3 to 5 ASCII letters, returned uppercase.
 pub(crate) fn fiat_code(field: &'static str, code: &str) -> Result<String> {
@@ -87,11 +88,13 @@ pub(crate) fn text(field: &'static str, value: &str, max: usize) -> Result<Strin
 pub(crate) fn invoice(field: &'static str, value: &str) -> Result<String> {
     let value = value.trim();
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-' | '+');
-    if value.is_empty()
-        || value.len() > MAX_INVOICE_CHARS
-        || value.starts_with('-')
-        || !value.chars().all(allowed)
-    {
+    if value.len() > MAX_INVOICE_CHARS {
+        return Err(invalid(
+            field,
+            format!("must be at most {MAX_INVOICE_CHARS} characters"),
+        ));
+    }
+    if value.is_empty() || value.starts_with('-') || !value.chars().all(allowed) {
         return Err(invalid(
             field,
             "expected a BOLT11 invoice or a Lightning address (user@domain)",
@@ -184,6 +187,14 @@ mod tests {
         assert!(invoice("i", "lnbc1 2").is_err());
         assert!(invoice("i", "$(whoami)").is_err());
         assert!(invoice("i", "").is_err());
+    }
+
+    #[test]
+    fn a_long_invoice_with_route_hints_fits_and_the_limit_is_named() {
+        let long = format!("lnbcrt1{}", "q".repeat(3000));
+        assert!(invoice("i", &long).is_ok());
+        let error = invoice("i", &"q".repeat(5000)).unwrap_err().to_string();
+        assert!(error.contains("characters"), "{error}");
     }
 
     #[test]

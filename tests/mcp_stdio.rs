@@ -431,6 +431,27 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
                 "--yes",
             ],
         ),
+        (
+            "add_bond_invoice",
+            json!({"order_id": id, "invoice": "lnbcrt1pbond"}),
+            vec![
+                "bond",
+                "add-invoice",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--invoice=lnbcrt1pbond",
+                "--yes",
+            ],
+        ),
+        (
+            "cancel",
+            json!({"order_id": id}),
+            vec![
+                "order",
+                "cancel",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--yes",
+            ],
+        ),
         ("sync_orders", json!({}), vec!["order", "sync"]),
     ] {
         let result = call(&client, tool, args).await;

@@ -19,8 +19,8 @@ pub enum Error {
 
     #[error(
         "mostro-cli did not finish within {0:?} (MOSTRO_MCP_COMMAND_TIMEOUT_SECS) and was \
-         stopped, but its message may have reached the node: check get_order or \
-         list_orders before retrying"
+         stopped, but its message may have reached the node: do not retry before \
+         checking get_order, list_my_orders or list_messages"
     )]
     Timeout(Duration),
 

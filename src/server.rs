@@ -239,7 +239,8 @@ impl<R: CliRunner> MostroServer<R> {
     #[tool(
         description = "Release the sats to the buyer (the seller's step). IRREVERSIBLE \
             and STATE-CHANGING: only once the user confirms the fiat arrived in their \
-            account, which fiat_received=true states; anything else is refused. \
+            account, which fiat_received=true states (set it only after the user said so \
+            in this conversation); anything else is refused. \
             Refused unless the server runs with MOSTRO_MCP_ALLOW_WRITES=true. On \
             `uncertain`, never retry: check get_order and list_messages.",
         annotations(
@@ -291,7 +292,8 @@ impl<R: CliRunner> MostroServer<R> {
         &self,
         Parameters(params): Parameters<SyncOrdersParams>,
     ) -> CallToolResult {
-        self.execute_write(|| sync_orders::args(&params)).await
+        self.execute_local_write(|| sync_orders::args(&params))
+            .await
     }
 }
 
@@ -302,13 +304,14 @@ impl<R: CliRunner> MostroServer<R> {
     }
 
     /// Runs the CLI with `args` when they were built; every failure becomes a
-    /// tool error the agent can read. A state-changing command whose output
-    /// cannot be read did run, so it may have reached the node: that error
-    /// starts with the same no-retry warning as an `uncertain` outcome.
+    /// tool error the agent can read. A command that sends to the node and
+    /// timed out, or whose output cannot be read, did run, so it may have
+    /// reached the node: that error starts with the same no-retry warning as an
+    /// `uncertain` outcome.
     async fn run_tool(
         &self,
         args: MostroResult<Vec<String>>,
-        state_changing: bool,
+        may_reach_node: bool,
     ) -> CallToolResult {
         let args = match args {
             Ok(args) => args,
@@ -333,16 +336,18 @@ impl<R: CliRunner> MostroServer<R> {
                         stderr: run.stderr,
                         stdout: excerpt(&run.stdout),
                     });
-                    let text = if state_changing {
-                        format!("{UNCERTAIN_WARNING}\n\n{text}")
+                    if may_reach_node {
+                        warned_error(&text)
                     } else {
-                        text
-                    };
-                    CallToolResult::error(vec![ContentBlock::text(text)])
+                        CallToolResult::error(vec![ContentBlock::text(text)])
+                    }
                 }
             },
             Err(error) => {
                 tracing::warn!(%command, %error, "mostro-cli failed");
+                if may_reach_node && matches!(error, Error::Timeout(_)) {
+                    return warned_error(&error_text(&error));
+                }
                 tool_error(&error)
             }
         }
@@ -354,11 +359,35 @@ impl<R: CliRunner> MostroServer<R> {
         &self,
         build: impl FnOnce() -> MostroResult<Vec<String>>,
     ) -> CallToolResult {
+        self.gated(build, true).await
+    }
+
+    /// The write gate for a tool that only writes the CLI's local store
+    /// (`sync_orders`): nothing reaches the node, so a failure is not warned.
+    async fn execute_local_write(
+        &self,
+        build: impl FnOnce() -> MostroResult<Vec<String>>,
+    ) -> CallToolResult {
+        self.gated(build, false).await
+    }
+
+    async fn gated(
+        &self,
+        build: impl FnOnce() -> MostroResult<Vec<String>>,
+        may_reach_node: bool,
+    ) -> CallToolResult {
         if !self.allow_writes {
             return tool_error(&Error::WritesDisabled);
         }
-        self.run_tool(build(), true).await
+        self.run_tool(build(), may_reach_node).await
     }
+}
+
+/// A tool error that starts with the no-retry warning.
+fn warned_error(text: &str) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "{UNCERTAIN_WARNING}\n\n{text}"
+    ))])
 }
 
 fn tool_error(error: &Error) -> CallToolResult {
@@ -721,6 +750,43 @@ mod tests {
             .list_orders(Parameters(ListOrdersParams::default()))
             .await;
         assert!(!text_of(&listed).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_write_is_warned_and_a_timed_out_read_is_not() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Err(Error::Timeout(std::time::Duration::from_secs(60)))
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let sent = server.fiat_sent(Parameters(step())).await;
+        assert_eq!(sent.is_error, Some(true));
+        let body = text_of(&sent);
+        assert!(
+            body.starts_with(crate::outcome::UNCERTAIN_WARNING),
+            "{body}"
+        );
+        assert!(body.contains("list_my_orders"), "{body}");
+        let listed = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert!(!text_of(&listed).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    }
+
+    #[tokio::test]
+    async fn sync_orders_sends_nothing_to_the_node_so_it_is_not_warned() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Ok(CliRun {
+                stdout: "not a document".into(),
+                stderr: String::new(),
+                code: Some(1),
+            })
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let synced = server
+            .sync_orders(Parameters(SyncOrdersParams::default()))
+            .await;
+        assert_eq!(synced.is_error, Some(true));
+        assert!(!text_of(&synced).starts_with(crate::outcome::UNCERTAIN_WARNING));
     }
 
     #[tokio::test]

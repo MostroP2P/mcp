@@ -76,3 +76,8 @@ Native Linux, on `pr/4-migrate-tools` after `c785cd8`, against mostro-cli `v0.17
   tools reached the CLI with flags it accepted (`identity_missing` each, never `invalid_arguments`); the CLI created nothing in `MCLI_DIR`.
 - **Not run**: no node or regtest (slice 5).
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 86 + 11 passed, build.
+- **Review fixes (2026-11-07)**: a timed-out write that sends to the node now starts with the no-retry warning, and the timeout text points
+  at `get_order`, `list_my_orders` and `list_messages` instead of inviting a retry; `sync_orders`, which only writes the local store, is gated
+  but never warned; invoices may be 4096 characters (route hints), with the limit named; the `release` description says to set
+  `fiat_received` only once the user said so; the stdio trade table adds `add_bond_invoice` and `cancel`. 3 tests, red first; mutation:
+  dropping the timeout warning failed its test, restored. Gates: fmt, clippy `-D warnings`, `cargo test` 89 + 11 passed.
