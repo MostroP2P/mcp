@@ -114,13 +114,18 @@ async fn a_client_discovers_twelve_typed_tools() {
             .unwrap_or("")
             .contains("BUY sats")
     );
-    assert!(
-        info.instructions
-            .as_deref()
-            .unwrap_or("")
-            .contains("https://mostro.network/mostro-cli-book/"),
-        "the agent is told where the outcome documents are described"
-    );
+    let instructions = info.instructions.as_deref().unwrap_or("");
+    for reference in [
+        "https://mostro.network/mostro-cli-book/",
+        "errors.html",
+        "reference/actions.html",
+        "flows/uncertain.html",
+    ] {
+        assert!(
+            instructions.contains(reference),
+            "the agent is told where the outcome documents are described: {reference}"
+        );
+    }
 
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<_> = tools.iter().map(|t| t.name.to_string()).collect();
