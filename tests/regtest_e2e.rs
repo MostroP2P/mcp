@@ -30,7 +30,7 @@ async fn list_orders_reaches_the_regtest_node() {
     .expect("spawn mostro-mcp");
     let client = ().serve(transport).await.expect("MCP handshake");
 
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 4);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
 
     let result = client
         .call_tool(CallToolRequestParams::new("list_orders"))

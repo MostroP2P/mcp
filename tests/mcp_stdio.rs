@@ -99,7 +99,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-async fn a_client_discovers_four_typed_tools() {
+async fn a_client_discovers_twelve_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -120,12 +120,28 @@ async fn a_client_discovers_four_typed_tools() {
     names.sort();
     assert_eq!(
         names,
-        ["create_order", "get_order", "list_orders", "take_order"]
+        [
+            "add_bond_invoice",
+            "add_invoice",
+            "cancel",
+            "create_order",
+            "fiat_sent",
+            "get_order",
+            "list_messages",
+            "list_my_orders",
+            "list_orders",
+            "release",
+            "sync_orders",
+            "take_order"
+        ]
     );
 
     let take = tools.iter().find(|t| t.name == "take_order").unwrap();
     let schema = serde_json::to_value(&take.input_schema).unwrap();
     assert_eq!(schema["required"], json!(["order_id", "order_kind"]));
+    let release = tools.iter().find(|t| t.name == "release").unwrap();
+    let schema = serde_json::to_value(&release.input_schema).unwrap();
+    assert_eq!(schema["required"], json!(["order_id", "fiat_received"]));
 
     client.cancel().await.unwrap();
 }
@@ -283,7 +299,7 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
         "{}",
         text(&result)
     );
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 4);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
     client.cancel().await.unwrap();
 }
 
@@ -362,6 +378,116 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("is not an order id"));
 
     // The server is still serving afterwards.
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 4);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = connect(&fake_cli(&dir), true).await;
+    let id = "ffdc768a-37d8-429e-bfcc-0968be56b6f9";
+
+    for (tool, args, expected) in [
+        ("list_my_orders", json!({}), vec!["order", "mine"]),
+        (
+            "list_messages",
+            json!({"order_id": id, "since_minutes": 60}),
+            vec![
+                "message",
+                "list",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--since=60",
+            ],
+        ),
+        (
+            "add_invoice",
+            json!({"order_id": id, "invoice": "lnbcrt1pexample"}),
+            vec![
+                "order",
+                "add-invoice",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--invoice=lnbcrt1pexample",
+                "--yes",
+            ],
+        ),
+        (
+            "fiat_sent",
+            json!({"order_id": id}),
+            vec![
+                "order",
+                "fiat-sent",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--yes",
+            ],
+        ),
+        (
+            "release",
+            json!({"order_id": id, "fiat_received": true}),
+            vec![
+                "order",
+                "release",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--yes",
+            ],
+        ),
+        ("sync_orders", json!({}), vec!["order", "sync"]),
+    ] {
+        let result = call(&client, tool, args).await;
+        assert_ne!(result.is_error, Some(true), "{tool}: {}", text(&result));
+        let mut want = vec![json!("--output=json")];
+        want.extend(expected.into_iter().map(|a| json!(a)));
+        want.push(json!("end"));
+        assert_eq!(data_of(&result)["args"], json!(want), "{tool}");
+    }
+
+    let refused = call(
+        &client,
+        "release",
+        json!({"order_id": id, "fiat_received": false}),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        text(&refused).contains("fiat_received"),
+        "{}",
+        text(&refused)
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
+    for (fixture, tool, args, contains) in [
+        (
+            "messages_identity_missing",
+            "list_messages",
+            json!({}),
+            "identity_missing",
+        ),
+        (
+            "mine_newest_first",
+            "list_my_orders",
+            json!({}),
+            "order.mine",
+        ),
+        (
+            "bond_invoice_accepted",
+            "add_bond_invoice",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001", "invoice": "lnbcrt1p"}),
+            "invoice_accepted",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = fake_cli(&dir);
+        answer_with(&dir, fixture);
+        let client = connect(&cli, true).await;
+        let result = call(&client, tool, args).await;
+        assert!(
+            text(&result).contains(contains),
+            "{fixture}: {}",
+            text(&result)
+        );
+        client.cancel().await.unwrap();
+    }
 }

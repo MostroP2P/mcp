@@ -10,7 +10,7 @@ pub enum Error {
 
     #[error(
         "state-changing tools are disabled on this server; restart it with \
-         MOSTRO_MCP_ALLOW_WRITES=true to enable create_order and take_order"
+         MOSTRO_MCP_ALLOW_WRITES=true to enable them"
     )]
     WritesDisabled,
 

@@ -44,8 +44,8 @@ server never reads.
 | `MOSTRO_CLI_PATH` | no | The CLI binary; default `mostro-cli` from `$PATH` |
 | `MCLI_DIR` | no | The CLI's data dir = the identity used; default `~/.mcli` |
 | `POW`, `TRANSPORT` | no | Passed to the CLI as-is |
-| `MOSTRO_MCP_ALLOW_WRITES` | no | `true` / `1` / `yes` enables `create_order` / `take_order`. **Default off** |
-| `MOSTRO_MCP_COMMAND_TIMEOUT_SECS` | no | Per-command timeout, default 60 |
+| `MOSTRO_MCP_ALLOW_WRITES` | no | `true` / `1` / `yes` enables the state-changing tools. **Default off** |
+| `MOSTRO_MCP_COMMAND_TIMEOUT_SECS` | no | Per-command timeout, default 60, at least 30 (the CLI waits up to 15 s for the node's reply) |
 | `MOSTRO_MCP_LOG` | no | Log filter (stderr), default `info` |
 
 An invalid value stops the server at startup with a message naming it. A
@@ -98,6 +98,20 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 | `get_order` | yes | `order info` | `order_id` (UUID) |
 | `create_order` | no | `order new` | `kind`, `fiat_code`, `fiat_amount` **or** `fiat_amount_min`+`fiat_amount_max`, `payment_method`, `amount_sats?` (omit = market price), `premium?` (above -100 %), `invoice?` (buy only), `expiration_days?` |
 | `take_order` | no | `order take-sell` / `order take-buy` | `order_id`, `order_kind` (the order's side, never guessed), `fiat_amount?` (range orders), `invoice?` (taking a sell only) |
+| `list_my_orders` | yes | `order mine` | none. Local store only, no network |
+| `list_messages` | yes | `message list` | `order_id?`, `since_minutes?` (1 to 10080, default 30) |
+| `add_invoice` | no | `order add-invoice` | `order_id`, `invoice` (BOLT11 or Lightning address, for the sats you buy) |
+| `add_bond_invoice` | no | `bond add-invoice` | `order_id`, `invoice` (BOLT11 for exactly your share of a slashed bond) |
+| `fiat_sent` | no | `order fiat-sent` | `order_id` |
+| `release` | no | `order release` | `order_id`, `fiat_received` (must be `true`, else refused before the CLI runs) |
+| `cancel` | no | `order cancel` | `order_id` |
+| `sync_orders` | no | `order sync` | `since_minutes?` (1 to 10080, the default). Saves in the local store only |
+
+Every state-changing tool passes `--yes`: the confirmation is the MCP host's
+approval prompt plus `MOSTRO_MCP_ALLOW_WRITES`. **No tool pays an invoice.**
+When the node asks for a payment (a seller's hold invoice, a bond),
+`list_messages` returns the invoice as data and the user pays it from their own
+wallet.
 
 Each tool advertises a JSON schema and MCP annotations (`readOnlyHint`). Every
 failure is a tool error (`isError: true`) whose text says what to fix.
@@ -112,8 +126,8 @@ state-changing.
 
 ## Security
 
-- **Writes are off by default.** `create_order` and `take_order` are refused
-  server-side unless the server was started with `MOSTRO_MCP_ALLOW_WRITES=true`,
+- **Writes are off by default.** Every tool but `list_orders`, `get_order`,
+  `list_my_orders` and `list_messages` is refused server-side unless the server was started with `MOSTRO_MCP_ALLOW_WRITES=true`,
   independently of any confirmation the MCP host shows. Refused calls never
   start the CLI.
 - **No shell, no arbitrary commands.** The CLI is spawned directly with one
@@ -169,27 +183,24 @@ drive their wallets.
 regtest/devenv.sh cli alice identity init   # once per user
 regtest/devenv.sh cli bob identity init
 export MOSTRO_MCP_ALLOW_WRITES=true
-# Alice publishes a sell order (MCP)
-(eval "$(regtest/devenv.sh env alice)"; cargo run -q --example mcp_call -- create_order \
-  '{"kind":"sell","fiat_code":"USD","fiat_amount":15,"payment_method":"bank transfer","amount_sats":15000}')
-# Bob takes it (MCP), handing over the invoice his sats go to
-(eval "$(regtest/devenv.sh env bob)"; cargo run -q --example mcp_call -- take_order \
-  "{\"order_id\":\"<id>\",\"order_kind\":\"sell\",\"invoice\":\"$(regtest/devenv.sh invoice bob 15000)\"}")
-# The rest of the lifecycle is not exposed as tools yet: mostro-cli
-regtest/devenv.sh cli alice message list --order <id>   # Alice's hold invoice
+alice() { (eval "$(regtest/devenv.sh env alice)"; cargo run -q --example mcp_call -- "$@"); }
+bob() { (eval "$(regtest/devenv.sh env bob)"; cargo run -q --example mcp_call -- "$@"); }
+
+# Alice publishes a sell order
+alice create_order '{"kind":"sell","fiat_code":"USD","fiat_amount":15,"payment_method":"bank transfer","amount_sats":15000}'
+# Bob takes it, handing over the invoice his sats go to
+bob take_order "{\"order_id\":\"<id>\",\"order_kind\":\"sell\",\"invoice\":\"$(regtest/devenv.sh invoice bob 15000)\"}"
+# Alice reads the hold invoice the node asks her to pay, and pays it from her wallet
+alice list_messages '{"order_id":"<id>"}'
 regtest/devenv.sh pay alice <hold invoice>
-regtest/devenv.sh cli bob order fiat-sent --order <id> --yes
-regtest/devenv.sh cli alice order release --order <id> --yes
+# Bob sends the fiat, then says so; Alice sees it arrive and releases
+bob fiat_sent '{"order_id":"<id>"}'
+alice release '{"order_id":"<id>","fiat_received":true}'
+alice get_order '{"order_id":"<id>"}'       # status success
 ```
 
-Taking without `invoice` works too: the node then asks for one, and Bob sends
-it with `regtest/devenv.sh cli bob order add-invoice --order <id> --invoice <bolt11> --yes`.
-
-With the earlier text-output server and mostro-cli `7944e82`, both ways were
-run on 2026-10-14 and ended in `success`, read back through
-`get_order` and `list_orders`: order `52f8d0fe…` (take, then `addinvoice`) and
-order `aa1b2c87…` (take with the invoice, mostro-cli `7944e82`), with Bob's
-invoices settled for 15 000 and 11 000 sats.
+Taking without `invoice` works too: `list_messages` then shows Bob the node's
+request, and he answers with `add_invoice`.
 
 ## Limitations
 
@@ -202,6 +213,6 @@ invoices settled for 15 000 and 11 000 sats.
   `list_orders` before retrying.
 - **Invoices must outlive the node's window.** mostrod rejects a BOLT11 invoice
   that expires before `now + invoice_expiration_window` (one hour by default).
-- **Four tools.** `add_invoice`, `fiat_sent`, `release`, `cancel`, `dispute`,
-  messages and ratings are still CLI-only.
+- **Disputes and ratings are CLI-only.** mostro-cli 0.17.0 offers `dispute
+  open` and `order rate` in JSON; they are not tools yet.
 - **One identity per server process**, the one in `MCLI_DIR`.

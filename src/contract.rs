@@ -11,10 +11,20 @@ use crate::error::{Error, Result};
 use crate::outcome::{Outcome, Status};
 
 /// The canonical commands the read-only tools need.
-const READ: [&str; 2] = ["order.list", "order.info"];
+const READ: [&str; 4] = ["order.list", "order.info", "order.mine", "message.list"];
 
 /// The canonical commands the state-changing tools need.
-const WRITE: [&str; 3] = ["order.new", "order.take-sell", "order.take-buy"];
+const WRITE: [&str; 9] = [
+    "order.new",
+    "order.take-sell",
+    "order.take-buy",
+    "order.add-invoice",
+    "bond.add-invoice",
+    "order.fiat-sent",
+    "order.release",
+    "order.cancel",
+    "order.sync",
+];
 
 /// The commands the enabled tools need: the reads always, the writes only on a
 /// server that allows them.
@@ -152,7 +162,20 @@ mod tests {
 
     #[test]
     fn the_writes_are_required_only_when_enabled() {
-        assert_eq!(required(false), ["order.list", "order.info"]);
-        assert!(required(true).contains(&"order.take-sell"));
+        assert_eq!(
+            required(false),
+            ["order.list", "order.info", "order.mine", "message.list"]
+        );
+        for write in [
+            "order.take-sell",
+            "order.add-invoice",
+            "bond.add-invoice",
+            "order.fiat-sent",
+            "order.release",
+            "order.cancel",
+            "order.sync",
+        ] {
+            assert!(required(true).contains(&write), "{write}");
+        }
     }
 }

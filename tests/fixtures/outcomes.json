@@ -1,4 +1,51 @@
 {
+ "bond_invoice_accepted": {
+  "exit_code": 0,
+  "stdout": {
+   "command": "bond.add-invoice",
+   "data": {
+    "counterparty_share_sats": "5000",
+    "node_pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "order_id": "00000000-0000-0000-0000-000000000001",
+    "result": "invoice_accepted",
+    "trade_pubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+   },
+   "error": null,
+   "meta": {
+    "daemon_acceptance": "accepted",
+    "persistence": "not_attempted",
+    "publication": "published",
+    "snapshot": null
+   },
+   "schema_version": "1",
+   "status": "ok",
+   "warnings": []
+  }
+ },
+ "cancel_canceled": {
+  "exit_code": 0,
+  "stdout": {
+   "command": "order.cancel",
+   "data": {
+    "next_step": null,
+    "next_trade_index": null,
+    "node_pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "order_id": "00000000-0000-0000-0000-000000000001",
+    "result": "canceled",
+    "trade_pubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+   },
+   "error": null,
+   "meta": {
+    "daemon_acceptance": "accepted",
+    "persistence": "applied",
+    "publication": "published",
+    "snapshot": null
+   },
+   "schema_version": "1",
+   "status": "ok",
+   "warnings": []
+  }
+ },
  "info_node_refused": {
   "exit_code": 1,
   "stdout": {
@@ -53,6 +100,26 @@
    },
    "schema_version": "1",
    "status": "ok",
+   "warnings": []
+  }
+ },
+ "messages_identity_missing": {
+  "exit_code": 1,
+  "stdout": {
+   "command": "message.list",
+   "data": null,
+   "error": {
+    "code": "identity_missing",
+    "message": "No local identity exists."
+   },
+   "meta": {
+    "daemon_acceptance": "not_applicable",
+    "persistence": "not_applicable",
+    "publication": "not_applicable",
+    "snapshot": null
+   },
+   "schema_version": "1",
+   "status": "error",
    "warnings": []
   }
  },
@@ -181,6 +248,40 @@
      "since": "2026-10-09T00:00:00Z",
      "until": null
     }
+   },
+   "schema_version": "1",
+   "status": "ok",
+   "warnings": []
+  }
+ },
+ "mine_newest_first": {
+  "exit_code": 0,
+  "stdout": {
+   "command": "order.mine",
+   "data": {
+    "orders": [
+     {
+      "id": "00000000-0000-0000-0000-000000000005",
+      "side": "sell",
+      "status": "pending",
+      "trade_index": "3",
+      "trade_pubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "side": "buy",
+      "status": "waiting-payment",
+      "trade_index": "1",
+      "trade_pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+     }
+    ]
+   },
+   "error": null,
+   "meta": {
+    "daemon_acceptance": "not_applicable",
+    "persistence": "not_applicable",
+    "publication": "not_applicable",
+    "snapshot": null
    },
    "schema_version": "1",
    "status": "ok",
@@ -456,11 +557,35 @@
      },
      {
       "cli_path": [
-       "dispute"
+       "dispute",
+       "open"
       ],
       "name": "dispute.open",
       "output_modes": [
-       "human"
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "identity",
+       "init"
+      ],
+      "name": "identity.init",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "identity",
+       "show"
+      ],
+      "name": "identity.show",
+      "output_modes": [
+       "human",
+       "json"
       ]
      },
      {
@@ -568,6 +693,17 @@
      {
       "cli_path": [
        "order",
+       "mine"
+      ],
+      "name": "order.mine",
+      "output_modes": [
+       "human",
+       "json"
+      ]
+     },
+     {
+      "cli_path": [
+       "order",
        "new"
       ],
       "name": "order.new",
@@ -578,11 +714,13 @@
      },
      {
       "cli_path": [
+       "order",
        "rate"
       ],
       "name": "order.rate",
       "output_modes": [
-       "human"
+       "human",
+       "json"
       ]
      },
      {

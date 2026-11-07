@@ -12,6 +12,12 @@ use crate::error::{Error, Result};
 pub const DEFAULT_CLI: &str = "mostro-cli";
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
+/// The shortest per-command timeout: mostro-cli waits up to 15 s for the
+/// node's reply (its `--reply-timeout` default) after connecting and
+/// publishing, and only then reports `uncertain`. A shorter limit would stop it
+/// first and lose that report.
+pub const MIN_TIMEOUT_SECS: u64 = 30;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// `MOSTRO_CLI_PATH`; `mostro-cli` from `$PATH` when unset.
@@ -87,7 +93,14 @@ impl Config {
         let timeout_secs = match get("MOSTRO_MCP_COMMAND_TIMEOUT_SECS") {
             None => DEFAULT_TIMEOUT_SECS,
             Some(value) => match value.parse::<u64>() {
-                Ok(secs) if secs > 0 => secs,
+                Ok(secs) if secs >= MIN_TIMEOUT_SECS => secs,
+                Ok(_) => {
+                    return Err(config_error(format!(
+                        "MOSTRO_MCP_COMMAND_TIMEOUT_SECS `{value}` is under {MIN_TIMEOUT_SECS} s: \
+                         mostro-cli waits up to 15 s for the node's reply and must be able to \
+                         report it"
+                    )));
+                }
                 _ => {
                     return Err(config_error(format!(
                         "MOSTRO_MCP_COMMAND_TIMEOUT_SECS `{value}` is not a positive number of seconds"
@@ -222,14 +235,14 @@ mod tests {
             ("POW", "8"),
             ("TRANSPORT", "nip44"),
             ("MCLI_DIR", "/tmp/alice"),
-            ("MOSTRO_MCP_COMMAND_TIMEOUT_SECS", "15"),
+            ("MOSTRO_MCP_COMMAND_TIMEOUT_SECS", "45"),
         ]);
         let config = load(&env).unwrap();
         assert_eq!(config.cli_path, PathBuf::from("/opt/mostro-cli"));
         assert_eq!(config.pow, Some(8));
         assert_eq!(config.transport.as_deref(), Some("nip44"));
         assert_eq!(config.mcli_dir, Some(PathBuf::from("/tmp/alice")));
-        assert_eq!(config.timeout, Duration::from_secs(15));
+        assert_eq!(config.timeout, Duration::from_secs(45));
     }
 
     #[test]
@@ -237,6 +250,8 @@ mod tests {
         for (key, value) in [
             ("MOSTRO_MCP_COMMAND_TIMEOUT_SECS", "0"),
             ("MOSTRO_MCP_COMMAND_TIMEOUT_SECS", "soon"),
+            // Shorter than the CLI's wait for the node's reply.
+            ("MOSTRO_MCP_COMMAND_TIMEOUT_SECS", "20"),
             ("POW", "-1"),
         ] {
             let mut env = minimal();

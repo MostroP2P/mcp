@@ -1,14 +1,19 @@
-//! The four tools, each as a typed parameter struct plus a pure function that
+//! The tools, each as a typed parameter struct plus a pure function that
 //! turns it into `mostro-cli` arguments. Building is kept apart from running so
 //! every rule here is unit-tested without a node.
 //!
 //! Arguments are always passed as `--flag=value`: a value that starts with `-`
 //! then stays a value and can never be read by the CLI as another flag.
 
+pub mod add_invoice;
 pub mod create_order;
 pub mod get_order;
+pub mod list_messages;
+pub mod list_my_orders;
 pub mod list_orders;
+pub mod sync_orders;
 pub mod take_order;
+pub mod trade_step;
 
 use std::fmt::Display;
 
@@ -95,6 +100,42 @@ pub(crate) fn invoice(field: &'static str, value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+/// A BOLT11 invoice only: [`invoice`] without the Lightning address.
+pub(crate) fn bolt11(field: &'static str, value: &str) -> Result<String> {
+    let value = invoice(field, value)?;
+    if value.contains('@') {
+        return Err(invalid(
+            field,
+            "expected a BOLT11 invoice, not a Lightning address",
+        ));
+    }
+    Ok(value)
+}
+
+/// The CLI's longest read window, in minutes (one week).
+const MAX_SINCE_MINUTES: u32 = 10_080;
+
+/// A read window in minutes, as `message list` and `order sync` take it.
+pub(crate) fn since_minutes(field: &'static str, minutes: u32) -> Result<u32> {
+    if !(1..=MAX_SINCE_MINUTES).contains(&minutes) {
+        return Err(invalid(
+            field,
+            format!("must be 1 to {MAX_SINCE_MINUTES} minutes (one week)"),
+        ));
+    }
+    Ok(minutes)
+}
+
+/// `order <step> --order=<id> --yes`: a trade step on one order.
+pub(crate) fn order_step(step: &str, field: &'static str, id: &str) -> Result<Vec<String>> {
+    Ok(vec![
+        "order".to_string(),
+        step.to_string(),
+        flag("order", order_id(field, id)?),
+        "--yes".to_string(),
+    ])
+}
+
 /// A positive amount the CLI can hold (it parses amounts as `i64`).
 pub(crate) fn positive(field: &'static str, amount: u64) -> Result<u64> {
     if amount == 0 || amount > i64::MAX as u64 {
@@ -143,5 +184,20 @@ mod tests {
         assert!(invoice("i", "lnbc1 2").is_err());
         assert!(invoice("i", "$(whoami)").is_err());
         assert!(invoice("i", "").is_err());
+    }
+
+    #[test]
+    fn a_bolt11_invoice_is_not_a_lightning_address() {
+        assert!(bolt11("i", "lnbcrt10u1pjexample0").is_ok());
+        assert!(bolt11("i", "alice@getalby.com").is_err());
+        assert!(bolt11("i", "-").is_err());
+    }
+
+    #[test]
+    fn a_read_window_is_one_minute_to_one_week() {
+        assert_eq!(since_minutes("s", 1).unwrap(), 1);
+        assert_eq!(since_minutes("s", 10_080).unwrap(), 10_080);
+        assert!(since_minutes("s", 0).is_err());
+        assert!(since_minutes("s", 10_081).is_err());
     }
 }

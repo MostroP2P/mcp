@@ -51,3 +51,28 @@ Native Linux, on `main` after `c0114db` (local). Lean mode.
   the new syntax; the library-route section, superseded by this spec, removed. Smoke run against mostro-cli `v0.17.0` (offline: empty `MCLI_DIR`,
   a closed local relay port): the contract check passed with writes on, and the four tools reached the CLI with flags it accepted
   (`identity_missing`, `relay_connection_failed`, never `invalid_arguments`). Gates: fmt, clippy `-D warnings`, `cargo test` 70 + 9 passed, build.
+
+## Slice 4: The Tools That Finish A Trade: 2026-11-07
+
+Native Linux, on `pr/4-migrate-tools` after `c785cd8`, against mostro-cli `v0.17.0`. Lean mode.
+
+- **Tools** (`tools/`): `list_my_orders` → `order mine` (read-only, offline; added beyond the spec as the recovery read after an `uncertain`
+  create or take), `list_messages` → `message list [--order] [--since]` (read-only), `add_invoice` → `order add-invoice`, `add_bond_invoice` →
+  `bond add-invoice` (BOLT11 only), `fiat_sent` → `order fiat-sent`, `release` → `order release` (refused before spawning unless
+  `fiat_received` is `true`), `cancel` → `order cancel`, `sync_orders` → `order sync [--since]`. Every write passes `--yes` and is behind the
+  write gate; read windows are 1 to 10080 minutes, as the CLI accepts. Descriptions and instructions name the next tool, say that no tool pays
+  an invoice, and what `uncertain` means.
+- **Contract check**: reads need `order.mine` and `message.list`; writes add the six trade-step commands.
+- **Config**: `MOSTRO_MCP_COMMAND_TIMEOUT_SECS` under 30 is refused: the CLI waits up to 15 s (`--reply-timeout` default) for the node's
+  reply, and a shorter limit would stop it before it can report `uncertain`.
+- **Fixtures**: rebuilt by `tests/fixtures/refresh.py` from the CLI at `v0.17.0`; the eleven earlier documents are byte-identical there; added
+  `cancel_canceled`, `bond_invoice_accepted`, `messages_identity_missing`, `mine_newest_first`; the `schema` fixture now lists `dispute.open`,
+  `order.rate`, `identity.*` and `order.mine` with JSON.
+- **Tests**: unit tests for every new `args` and the shared validators, written first and failing on `todo!()` stubs (13 red); server tests
+  for the twelve tools' hints, the write gate on every trade step, `release` without `fiat_received` never spawning, and each command name;
+  stdio tests for a whole trade's argument vectors and the CLI's own documents reaching the agent.
+- **Mutation spot check**: dropping the `fiat_received` check failed two tests; restored.
+- **Real CLI** (`v0.17.0`, offline: empty `MCLI_DIR`, closed local relay port): the contract check passed with writes on, and all eight new
+  tools reached the CLI with flags it accepted (`identity_missing` each, never `invalid_arguments`); the CLI created nothing in `MCLI_DIR`.
+- **Not run**: no node or regtest (slice 5).
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 86 + 11 passed, build.

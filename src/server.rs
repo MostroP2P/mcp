@@ -1,4 +1,4 @@
-//! The MCP server: four tools over a [`CliRunner`].
+//! The MCP server: the Mostro tools over a [`CliRunner`].
 
 use std::sync::Arc;
 
@@ -13,10 +13,15 @@ use crate::cli_backend::CliRunner;
 use crate::error::{Error, Result as MostroResult};
 use crate::outcome::{Outcome, UNCERTAIN_WARNING, excerpt};
 use crate::tools::{
+    add_invoice::{self, AddInvoiceParams},
     create_order::{self, CreateOrderParams},
     get_order::{self, GetOrderParams},
+    list_messages::{self, ListMessagesParams},
+    list_my_orders,
     list_orders::{self, ListOrdersParams},
+    sync_orders::{self, SyncOrdersParams},
     take_order::{self, TakeOrderParams},
+    trade_step::{self, OrderStepParams, ReleaseParams},
 };
 
 const INSTRUCTIONS: &str = "\
@@ -27,15 +32,29 @@ Sides: an order is named by its maker. A `sell` order sells sats: taking it \
 means you BUY sats and pay fiat. A `buy` order buys sats: taking it means you \
 SELL sats, and you will be asked to pay a Lightning hold invoice.
 
-list_orders and get_order only read. create_order and take_order commit the \
-user to a trade: confirm the exact order, side and amounts with the user \
-before calling them. This server refuses them unless it was started with \
-MOSTRO_MCP_ALLOW_WRITES=true.
+Reading changes nothing: list_orders (the public book), get_order (the node's \
+record of an order of yours), list_my_orders (the orders this identity holds \
+locally, no network) and list_messages (what the node asked you: the next \
+step, with any invoice to pay as data).
+
+Every other tool is STATE-CHANGING and commits the user: confirm the exact \
+order, side and amounts with the user before calling it. This server refuses \
+them unless it was started with MOSTRO_MCP_ALLOW_WRITES=true. A trade runs: \
+create_order or take_order; then, as list_messages asks, add_invoice (the \
+buyer's invoice for the sats) or a payment by the user; fiat_sent (the buyer, \
+once the fiat went out); release (the seller, only once the user confirms the \
+fiat arrived; irreversible). cancel withdraws an order or a trade; \
+add_bond_invoice claims a share of a slashed bond; sync_orders adopts orders \
+the node created for this identity (the next order of a range).
+
+These tools never pay an invoice. When the node asks for a payment (a hold \
+invoice, a bond), give the invoice to the user to pay from their own wallet, \
+then follow with list_messages.
 
 Every result is the JSON outcome document of mostro-cli: `status` (`ok`, `error` or \
 `uncertain`), `data` (with `next_step` where the node asks the user for something), \
 `error` and `warnings`. An `uncertain` result means the request may have reached the \
-node: never retry it, check the state first.";
+node: never retry it, check the state first (get_order, list_my_orders, list_messages).";
 
 pub struct MostroServer<R: CliRunner> {
     runner: Arc<R>,
@@ -115,7 +134,8 @@ impl<R: CliRunner> MostroServer<R> {
             hold invoice). fiat_amount only for range orders. Refused unless the \
             server runs with MOSTRO_MCP_ALLOW_WRITES=true. If it reports an error, \
             do NOT retry blindly: the node may have accepted the take (mostro-cli \
-            can fail after the node answered). Check get_order or list_orders first.",
+            can fail after the node answered). Check list_my_orders, get_order or \
+            list_messages first. Next: list_messages says what the node asks.",
         annotations(
             title = "Take order",
             read_only_hint = false,
@@ -126,6 +146,152 @@ impl<R: CliRunner> MostroServer<R> {
     )]
     async fn take_order(&self, Parameters(params): Parameters<TakeOrderParams>) -> CallToolResult {
         self.execute_write(|| take_order::args(&params)).await
+    }
+
+    #[tool(
+        description = "List the orders this identity holds in mostro-cli's local store \
+            (made, taken or adopted), newest first, with their local status. Offline: \
+            reads no relay. Use it to find your order ids, and to check what happened \
+            after an `uncertain` create_order or take_order.",
+        annotations(
+            title = "List my orders",
+            read_only_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_my_orders(&self) -> CallToolResult {
+        self.execute(Ok(list_my_orders::args())).await
+    }
+
+    #[tool(
+        description = "Read what the node said about this identity's trades, newest \
+            first: each message's action and `next_step` (pay an invoice, add an \
+            invoice, send the fiat, wait), with any invoice to pay as data. Filter by \
+            order_id; since_minutes reads further back (default 30, at most 10080). \
+            Call it after every state-changing tool to learn the next step.",
+        annotations(title = "List messages", read_only_hint = true, open_world_hint = true)
+    )]
+    async fn list_messages(
+        &self,
+        Parameters(params): Parameters<ListMessagesParams>,
+    ) -> CallToolResult {
+        self.execute(list_messages::args(&params)).await
+    }
+
+    #[tool(
+        description = "Send the invoice the node asked for (`next_step` `add_invoice`): \
+            the buyer's BOLT11 invoice or Lightning address for the sats. \
+            STATE-CHANGING: confirm with the user first. Refused unless the server runs \
+            with MOSTRO_MCP_ALLOW_WRITES=true. Then call list_messages.",
+        annotations(
+            title = "Add invoice",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn add_invoice(
+        &self,
+        Parameters(params): Parameters<AddInvoiceParams>,
+    ) -> CallToolResult {
+        self.execute_write(|| add_invoice::args(&params)).await
+    }
+
+    #[tool(
+        description = "Claim your share of a slashed bond (`next_step` \
+            `add_bond_invoice`): a BOLT11 invoice for exactly the share list_messages \
+            reports. STATE-CHANGING: confirm with the user first. Refused unless the \
+            server runs with MOSTRO_MCP_ALLOW_WRITES=true.",
+        annotations(
+            title = "Add bond invoice",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn add_bond_invoice(
+        &self,
+        Parameters(params): Parameters<AddInvoiceParams>,
+    ) -> CallToolResult {
+        self.execute_write(|| add_invoice::bond_args(&params)).await
+    }
+
+    #[tool(
+        description = "Tell the seller that the fiat was sent (the buyer's step). \
+            STATE-CHANGING: only once the user confirms they sent the fiat. Refused \
+            unless the server runs with MOSTRO_MCP_ALLOW_WRITES=true. Then call \
+            list_messages.",
+        annotations(
+            title = "Fiat sent",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn fiat_sent(&self, Parameters(params): Parameters<OrderStepParams>) -> CallToolResult {
+        self.execute_write(|| trade_step::fiat_sent_args(&params))
+            .await
+    }
+
+    #[tool(
+        description = "Release the sats to the buyer (the seller's step). IRREVERSIBLE \
+            and STATE-CHANGING: only once the user confirms the fiat arrived in their \
+            account, which fiat_received=true states; anything else is refused. \
+            Refused unless the server runs with MOSTRO_MCP_ALLOW_WRITES=true. On \
+            `uncertain`, never retry: check get_order and list_messages.",
+        annotations(
+            title = "Release",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn release(&self, Parameters(params): Parameters<ReleaseParams>) -> CallToolResult {
+        self.execute_write(|| trade_step::release_args(&params))
+            .await
+    }
+
+    #[tool(
+        description = "Cancel an order: a pending order of yours is withdrawn; in a \
+            running trade it asks the counterparty for a cooperative cancel. \
+            STATE-CHANGING: confirm with the user first. Refused unless the server runs \
+            with MOSTRO_MCP_ALLOW_WRITES=true. Then call list_messages.",
+        annotations(
+            title = "Cancel",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn cancel(&self, Parameters(params): Parameters<OrderStepParams>) -> CallToolResult {
+        self.execute_write(|| trade_step::cancel_args(&params))
+            .await
+    }
+
+    #[tool(
+        description = "Adopt the orders the node created for this identity that the \
+            local store lacks, such as the next order of a range after a release. \
+            Saves them in mostro-cli's store (STATE-CHANGING locally; nothing is sent \
+            to the node). since_minutes: how far back, default and maximum 10080. \
+            Refused unless the server runs with MOSTRO_MCP_ALLOW_WRITES=true.",
+        annotations(
+            title = "Sync orders",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn sync_orders(
+        &self,
+        Parameters(params): Parameters<SyncOrdersParams>,
+    ) -> CallToolResult {
+        self.execute_write(|| sync_orders::args(&params)).await
     }
 }
 
@@ -223,7 +389,13 @@ mod tests {
 
     use super::*;
     use crate::cli_backend::CliRun;
-    use crate::tools::OrderKind;
+    use crate::tools::{
+        OrderKind,
+        add_invoice::AddInvoiceParams,
+        list_messages::ListMessagesParams,
+        sync_orders::SyncOrdersParams,
+        trade_step::{OrderStepParams, ReleaseParams},
+    };
 
     /// Records every argument vector and answers with a canned result.
     struct FakeCli {
@@ -292,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_four_tools_with_honest_read_only_hints() {
+    fn twelve_tools_with_honest_read_only_hints() {
         let (server, _) = server(false);
         let mut tools: Vec<_> = server
             .tool_router
@@ -307,10 +479,112 @@ mod tests {
         assert_eq!(
             tools,
             [
+                ("add_bond_invoice".to_string(), Some(false)),
+                ("add_invoice".to_string(), Some(false)),
+                ("cancel".to_string(), Some(false)),
                 ("create_order".to_string(), Some(false)),
+                ("fiat_sent".to_string(), Some(false)),
                 ("get_order".to_string(), Some(true)),
+                ("list_messages".to_string(), Some(true)),
+                ("list_my_orders".to_string(), Some(true)),
                 ("list_orders".to_string(), Some(true)),
+                ("release".to_string(), Some(false)),
+                ("sync_orders".to_string(), Some(false)),
                 ("take_order".to_string(), Some(false)),
+            ]
+        );
+    }
+
+    const ID: &str = "ffdc768a-37d8-429e-bfcc-0968be56b6f9";
+
+    fn step() -> OrderStepParams {
+        OrderStepParams {
+            order_id: ID.into(),
+        }
+    }
+
+    fn invoice() -> AddInvoiceParams {
+        AddInvoiceParams {
+            order_id: ID.into(),
+            invoice: "lnbcrt1pexample".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_trade_step_is_refused_by_default_without_spawning_the_cli() {
+        let (server, cli) = server(false);
+        let release = ReleaseParams {
+            order_id: ID.into(),
+            fiat_received: true,
+        };
+        for result in [
+            server.add_invoice(Parameters(invoice())).await,
+            server.add_bond_invoice(Parameters(invoice())).await,
+            server.fiat_sent(Parameters(step())).await,
+            server.release(Parameters(release)).await,
+            server.cancel(Parameters(step())).await,
+            server
+                .sync_orders(Parameters(SyncOrdersParams::default()))
+                .await,
+        ] {
+            assert_eq!(result.is_error, Some(true));
+            assert!(text_of(&result).contains("MOSTRO_MCP_ALLOW_WRITES=true"));
+        }
+        assert!(cli.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn release_without_fiat_received_never_spawns_the_cli() {
+        let (server, cli) = server(true);
+        let result = server
+            .release(Parameters(ReleaseParams {
+                order_id: ID.into(),
+                fiat_received: false,
+            }))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("fiat_received"));
+        assert!(cli.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_new_tools_run_their_commands() {
+        let (server, cli) = server(true);
+        server.list_my_orders().await;
+        server
+            .list_messages(Parameters(ListMessagesParams::default()))
+            .await;
+        server.add_invoice(Parameters(invoice())).await;
+        server.add_bond_invoice(Parameters(invoice())).await;
+        server.fiat_sent(Parameters(step())).await;
+        server
+            .release(Parameters(ReleaseParams {
+                order_id: ID.into(),
+                fiat_received: true,
+            }))
+            .await;
+        server.cancel(Parameters(step())).await;
+        server
+            .sync_orders(Parameters(SyncOrdersParams::default()))
+            .await;
+        let commands: Vec<String> = cli
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|args| args[..2].join(" "))
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "order mine",
+                "message list",
+                "order add-invoice",
+                "bond add-invoice",
+                "order fiat-sent",
+                "order release",
+                "order cancel",
+                "order sync"
             ]
         );
     }
