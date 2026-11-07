@@ -28,7 +28,16 @@ pub fn required(allow_writes: bool) -> Vec<&'static str> {
 
 /// Check the outcome of `schema` against `needed`.
 pub fn verify(schema: &Outcome, needed: &[&str]) -> Result<()> {
-    let listed = (schema.status() == Status::Ok && schema.command() == Some("schema"))
+    // A failure is the CLI's own diagnosis (bad configuration, bad arguments):
+    // pass it on rather than a generic "no list of commands".
+    if schema.status() != Status::Ok {
+        let error = schema.document().get("error").unwrap_or(&Value::Null);
+        return Err(Error::Config(format!(
+            "mostro-cli answered `schema` with `{}`: {error}",
+            schema.document()["status"].as_str().unwrap_or("?")
+        )));
+    }
+    let listed = (schema.command() == Some("schema"))
         .then(|| schema.data())
         .flatten()
         .and_then(|data| data.get("commands"))
@@ -119,6 +128,26 @@ mod tests {
         )
         .unwrap();
         assert!(verify(&refused, &required(false)).is_err());
+    }
+
+    #[test]
+    fn a_failed_schema_keeps_the_error_of_the_cli() {
+        let failed = Outcome::parse(
+            &serde_json::json!({"schema_version":"1","command":"schema","status":"error",
+                "data":null,"error":{"code":"invalid_arguments",
+                "message":"The command arguments are invalid."},"warnings":[],"meta":{}})
+            .to_string(),
+            Some(2),
+        )
+        .unwrap();
+        let Err(Error::Config(message)) = verify(&failed, &required(false)) else {
+            panic!("expected a configuration error");
+        };
+        assert!(
+            message.contains("invalid_arguments")
+                && message.contains("The command arguments are invalid."),
+            "{message}"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ Native Linux, `cargo` of the sandbox toolchain, on `main` after `e29c4be` (local
 - **Stdio tests** (`tests/mcp_stdio.rs`, 8, real binary and real MCP client): the fake CLI echoes its arguments and environment as an `ok` document, or prints a chosen fixture with its exit code. Covered: discovery of four tools, the node configuration and nothing else reaching the CLI, the write gate, the three statuses (`ok`, `error`, warned `uncertain`), non-document output keeping the server alive, and a bad argument.
 - **Mutation spot checks**: skipping the exit-code check failed the both-directions test; restored.
 - **A stray file**: an earlier red run of the overlap test wrote a file named `--output=json` in the working directory (the test script used `$1`, now `--output=json`); the test uses `$2` and the file was deleted.
+- **Review fixes (CodeRabbit, 2026-11-06)**: the runner reads stdout to at most one byte past the 256 KiB limit and stderr to 256 KiB, and drains the rest, so a flooding CLI neither fills memory nor is cut off by a closed pipe; `Outcome::parse` also redacts every decoded string and key, since a JSON escape (`\u006esec1...`) slips past the raw-text pass. 3 unit tests; mutation: removing the drain failed both flood tests (the CLI died on SIGPIPE), restored.
 - **Gates**: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 72 passed and 0 failed (the real-node e2e is ignored), `cargo build`.
 
 ## Slice 1b: Startup Contract Check: 2026-11-04
