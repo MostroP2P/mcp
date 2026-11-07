@@ -81,3 +81,20 @@ Native Linux, on `pr/4-migrate-tools` after `c785cd8`, against mostro-cli `v0.17
   but never warned; invoices may be 4096 characters (route hints), with the limit named; the `release` description says to set
   `fiat_received` only once the user said so; the stdio trade table adds `add_bond_invoice` and `cancel`. 3 tests, red first; mutation:
   dropping the timeout warning failed its test, restored. Gates: fmt, clippy `-D warnings`, `cargo test` 89 + 11 passed.
+
+## Slice 5: Regtest, E2E And Verification: 2026-11-07
+
+Native Linux, Docker 29.9, on `pr/5-trade-tools` after `4355e88`, mostro-cli `v0.17.0` (debug build, `MOSTRO_CLI_PATH`). Authorized by the
+maintainer for this session.
+
+- **Regtest**: mostrod pinned to `v0.20.2`; sha256 `2d11a694…773d` from the release's `manifest.txt`, whose signature (`manifest.txt.sig.negrunch`)
+  verified. The v0.20 settings keys are additive (`[health]`, pegged prices, bond CLTV) with defaults; bonds stay off, so `settings.toml`
+  only changes its header. `devenv.sh up` now creates Alice's and Bob's identities (`identity init`), which the JSON commands never do.
+- **E2E** (`tests/regtest_e2e.rs`, ignored by default, one MCP server per user from `devenv.sh env`): the book read names the node; a whole
+  sell trade with the invoice given on the take; the same trade with `add_invoice` when the node asks; a pending order canceled and a sync.
+  The hold invoice is paid from Alice's wallet (`devenv.sh pay`), never by a tool. The old e2e expected the text output (`List Orders`); it
+  now checks the JSON document.
+- **Run**: `cargo test --test regtest_e2e -- --ignored --test-threads=1`: 4 passed in about 20 s. Checked outside the tests: order
+  `6cdced42…` is `success` on the node (`order info`) and Bob's 15 000-sat invoice is `SETTLED` in his LND. Seen on the way: `order mine`
+  keeps Alice's last local status (`settled-hold-invoice`) after the node reports `success`; that is the CLI's local store, not this server.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` (no FAILED), build.
