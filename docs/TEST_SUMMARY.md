@@ -119,3 +119,11 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 89 + 11 passed, build.
 - **Review fix (CodeRabbit)**: without bonds the slash test passed without exercising anything, its skip note hidden by libtest. It now
   fails on a node without bonds, and the no-bonds run leaves it out with `--skip loses_the_bond` (README and the test's header).
+
+## Follow-up: Pointing Agents At The mostro-cli Book: 2026-11-07
+
+- **Instructions** (`server.rs`): one paragraph sends agents to https://mostro.network/mostro-cli-book/ for the outcome documents (error
+  codes, `next_step` and node actions, recovery from `uncertain`). **README**: the "Tools" section links the envelope, error codes,
+  statuses, actions and uncertain-recovery pages. All six URLs answered 200.
+- **Test**: the stdio discovery test asserts that the instructions carry the book's URL; it failed before the change. Gates: fmt, clippy
+  `-D warnings`, `cargo test` 89 + 11 passed.

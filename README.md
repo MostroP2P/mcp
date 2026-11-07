@@ -124,6 +124,14 @@ not exactly one outcome document, or that disagrees with the CLI's exit status,
 is a tool error with a cleaned excerpt, under the same warning when the tool is
 state-changing.
 
+The [mostro-cli book](https://mostro.network/mostro-cli-book/) documents these
+documents field by field: [the outcome envelope](https://mostro.network/mostro-cli-book/envelope.html),
+[error codes](https://mostro.network/mostro-cli-book/errors.html),
+[order statuses](https://mostro.network/mostro-cli-book/reference/statuses.html),
+[the node's actions and `next_step` values](https://mostro.network/mostro-cli-book/reference/actions.html)
+and [recovering from `uncertain`](https://mostro.network/mostro-cli-book/flows/uncertain.html).
+The server's instructions point agents to it.
+
 ## Security
 
 - **Writes are off by default.** Every tool but `list_orders`, `get_order`,

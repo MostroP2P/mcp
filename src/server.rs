@@ -54,7 +54,11 @@ then follow with list_messages.
 Every result is the JSON outcome document of mostro-cli: `status` (`ok`, `error` or \
 `uncertain`), `data` (with `next_step` where the node asks the user for something), \
 `error` and `warnings`. An `uncertain` result means the request may have reached the \
-node: never retry it, check the state first (get_order, list_my_orders, list_messages).";
+node: never retry it, check the state first (get_order, list_my_orders, list_messages).
+
+The mostro-cli book describes these documents: https://mostro.network/mostro-cli-book/ \
+(error codes: errors.html; `next_step` and node actions: reference/actions.html; \
+recovering from `uncertain`: flows/uncertain.html).";
 
 pub struct MostroServer<R: CliRunner> {
     runner: Arc<R>,
