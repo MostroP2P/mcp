@@ -159,16 +159,16 @@ state-changing.
 ## Regtest network
 
 `regtest/` is a complete local network: bitcoind, three LND nodes (the node's,
-Alice's and Bob's), a nostr relay and **mostrod v0.19.3** from the official
+Alice's and Bob's), a nostr relay and **mostrod v0.20.2** from the official
 release binary, pinned and checksum-verified. The upstream `mostro-regtest`
 repository is out of date: its image expects a `.tar.gz` release asset, which
-v0.19.3 no longer ships, and its settings predate the current daemon.
+current releases no longer ship, and its settings predate the current daemon.
 
 ```bash
-regtest/devenv.sh up              # start, fund, open 4 channels (idempotent)
+regtest/devenv.sh up              # start, fund, open 4 channels, create Alice's and Bob's identities (idempotent)
 regtest/devenv.sh status
 eval "$(regtest/devenv.sh env alice)"   # point the CLI and the server at Alice
-cargo test --test regtest_e2e -- --ignored
+cargo test --test regtest_e2e -- --ignored --test-threads=1   # the trades below, through MCP
 regtest/devenv.sh clean           # wipe everything, test identities included
 ```
 
@@ -180,8 +180,6 @@ drive their wallets.
 ### A full trade through the MCP server
 
 ```bash
-regtest/devenv.sh cli alice identity init   # once per user
-regtest/devenv.sh cli bob identity init
 export MOSTRO_MCP_ALLOW_WRITES=true
 alice() { (eval "$(regtest/devenv.sh env alice)"; cargo run -q --example mcp_call -- "$@"); }
 bob() { (eval "$(regtest/devenv.sh env bob)"; cargo run -q --example mcp_call -- "$@"); }
@@ -201,6 +199,12 @@ alice get_order '{"order_id":"<id>"}'       # status success
 
 Taking without `invoice` works too: `list_messages` then shows Bob the node's
 request, and he answers with `add_invoice`.
+
+`tests/regtest_e2e.rs` runs this trade both ways (the invoice with the take,
+and `add_invoice` when the node asks), a cancel and a sync. On 2026-11-07,
+with mostrod v0.20.2 and mostro-cli v0.17.0, all ended as expected: the trades
+in `success` with Bob's 15 000-sat invoice settled, the canceled order in
+`canceled`.
 
 ## Limitations
 

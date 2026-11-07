@@ -176,6 +176,18 @@ open_channel() {
   lncli "$node" openchannel --node_key "$peer" --local_amt "$CHANNEL_SATS" --push_amt "$PUSH_SATS" > /dev/null
 }
 
+# mostro-cli's JSON commands never create an identity: give each test user
+# one, once (`identity init` refuses to replace an existing one).
+init_identities() {
+  local who
+  for who in alice bob; do
+    if ! cmd_cli "$who" identity show > /dev/null 2>&1; then
+      cmd_cli "$who" identity init > /dev/null
+      info "$who: identity created"
+    fi
+  done
+}
+
 cmd_up() {
   info "starting the regtest network"
   dc up -d --build
@@ -183,8 +195,9 @@ cmd_up() {
   fund_and_open_channels
   mkdir -p "$STATE_DIR/alice" "$STATE_DIR/bob"
   chmod 700 "$STATE_DIR" "$STATE_DIR/alice" "$STATE_DIR/bob"
+  init_identities
   info "ready — mostrod pubkey $MOSTRO_PUBKEY, relay $RELAYS"
-  info "try: $0 cli alice identity init, then: $0 cli alice order list"
+  info "try: $0 cli alice order list"
 }
 
 cmd_status() {

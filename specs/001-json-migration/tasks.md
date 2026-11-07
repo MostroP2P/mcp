@@ -19,7 +19,7 @@ authorization.
   including the refusals before spawning and the `uncertain` warning.
 - [x] **4. The tools that finish a trade.** (done 2026-11-07, plus `list_my_orders` over `order mine`) `list_messages`, `add_invoice`, `add_bond_invoice`, `fiat_sent`, `release` (with `fiat_received`), `cancel`,
   `sync_orders`; tests as above.
-- [ ] **5. Docs, e2e and verification.** README, the whole-trade walk-through, the e2e test updated (run only with authorization), evidence table, status lines.
+- [x] **5. Docs, e2e and verification.** (done 2026-11-07; regtest on mostrod v0.20.2) README, the whole-trade walk-through, the e2e test updated (run only with authorization), evidence table, status lines.
 
 ## Requirement ownership
 
