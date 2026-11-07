@@ -2,7 +2,8 @@
 #
 # Local Mostro regtest network for mostro-mcp.
 #
-#   ./devenv.sh up                 start everything and fund/open channels (idempotent)
+#   ./devenv.sh up                 start everything and fund/open channels (idempotent);
+#                                  MOSTRO_BONDS=1 turns on the taker bond (mostrod/bonds.toml)
 #   ./devenv.sh status             containers, block height, channels
 #   ./devenv.sh env <alice|bob>    export lines to point mostro-cli / mostro-mcp here
 #   ./devenv.sh cli <alice|bob> …  run mostro-cli as that test user
@@ -32,7 +33,8 @@ readonly PUSH_SATS=0
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 fatal() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
-dc() { docker compose -f "$HERE/compose.yml" "$@"; }
+readonly SETTINGS="$STATE_DIR/mostrod.toml"
+dc() { MOSTROD_SETTINGS="$SETTINGS" docker compose -f "$HERE/compose.yml" "$@"; }
 
 btc() {
   dc exec -T bitcoin bitcoin-cli -regtest -rpcport=18443 -rpcuser=bitcoin -rpcpassword=bitcoin "$@"
@@ -188,9 +190,32 @@ init_identities() {
   done
 }
 
+# Writes the node's settings: mostrod/settings.toml, plus the taker bond
+# (mostrod/bonds.toml) and 60-second waiting states when MOSTRO_BONDS=1.
+# Succeeds only when they changed.
+write_settings() {
+  local next="$SETTINGS.next"
+  mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
+  if [[ "${MOSTRO_BONDS-0}" == 1 ]]; then
+    sed 's/^expiration_seconds = .*/expiration_seconds = 60/' "$HERE/mostrod/settings.toml" > "$next"
+    cat "$HERE/mostrod/bonds.toml" >> "$next"
+  else
+    cp "$HERE/mostrod/settings.toml" "$next"
+  fi
+  if cmp -s "$next" "$SETTINGS"; then
+    rm "$next"
+    return 1
+  fi
+  mv "$next" "$SETTINGS"
+}
+
 cmd_up() {
-  info "starting the regtest network"
+  local changed=0
+  info "starting the regtest network (bonds: ${MOSTRO_BONDS-0})"
+  write_settings && changed=1
   dc up -d --build
+  # mostrod reads its settings at start: a switch of MOSTRO_BONDS restarts it.
+  ((changed)) && dc restart mostrod
   init_chain
   fund_and_open_channels
   mkdir -p "$STATE_DIR/alice" "$STATE_DIR/bob"

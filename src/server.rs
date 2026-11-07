@@ -164,11 +164,13 @@ impl<R: CliRunner> MostroServer<R> {
     }
 
     #[tool(
-        description = "Read what the node said about this identity's trades, newest \
+        description = "Read what the node said about this identity's trades, oldest \
             first: each message's action and `next_step` (pay an invoice, add an \
-            invoice, send the fiat, wait), with any invoice to pay as data. Filter by \
-            order_id; since_minutes reads further back (default 30, at most 10080). \
-            Call it after every state-changing tool to learn the next step.",
+            invoice, send the fiat, wait), with any invoice to pay as data. A payment \
+            step can come as two messages with the same `next_step`: the counterparty \
+            (payload kind `peer`) and the invoice (payload kind `payment_request`). \
+            Filter by order_id; since_minutes reads further back (default 30, at most \
+            10080). Call it after every state-changing tool to learn the next step.",
         annotations(title = "List messages", read_only_hint = true, open_world_hint = true)
     )]
     async fn list_messages(

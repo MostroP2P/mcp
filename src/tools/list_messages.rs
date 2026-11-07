@@ -1,5 +1,5 @@
 //! `list_messages` → `mostro-cli message list`: what the node said about this
-//! identity's trades, newest first: the step it asks for next, with any
+//! identity's trades, oldest first: the step it asks for next, with any
 //! invoice to pay as data. Read-only: it reads the relays and changes nothing.
 
 use schemars::JsonSchema;

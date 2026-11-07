@@ -81,7 +81,9 @@ services:
       nostr_relay:
         condition: service_started
     volumes:
-      - ./mostrod/settings.toml:/config/settings.toml:ro
+      # devenv.sh writes the effective settings (mostrod/settings.toml, plus
+      # mostrod/bonds.toml with MOSTRO_BONDS=1) into .state.
+      - ${MOSTROD_SETTINGS:-./mostrod/settings.toml}:/config/settings.toml:ro
       - mostrod_data:/data
       # The node's LND credentials (tls.cert, admin.macaroon), read-only.
       - mostro_lnd:/lnd:ro

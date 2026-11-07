@@ -172,6 +172,14 @@ cargo test --test regtest_e2e -- --ignored --test-threads=1   # the trades below
 regtest/devenv.sh clean           # wipe everything, test identities included
 ```
 
+`MOSTRO_BONDS=1 regtest/devenv.sh up` starts (or restarts) the node with the
+taker bond of `regtest/mostrod/bonds.toml`: a taker pays a hold-invoice bond
+(1 % of the order, at least 1 000 sats) before the trade goes on, and loses it
+if they let a waiting state time out (60 s in this mode), the other party
+claiming half with `add_bond_invoice`. `regtest/devenv.sh up` without it goes
+back to no bonds. The e2e tests run in both modes; the slash test skips itself
+without bonds.
+
 The node's key is the public `mostro-regtest` test key
 (`724497f3…218ac8d5`); the relay is `ws://localhost:7000`. `devenv.sh cli
 <alice|bob> …` runs mostro-cli as either user, and `invoice` / `pay` / `lncli`
@@ -200,11 +208,14 @@ alice get_order '{"order_id":"<id>"}'       # status success
 Taking without `invoice` works too: `list_messages` then shows Bob the node's
 request, and he answers with `add_invoice`.
 
-`tests/regtest_e2e.rs` runs this trade both ways (the invoice with the take,
-and `add_invoice` when the node asks), a cancel and a sync. On 2026-11-07,
-with mostrod v0.20.2 and mostro-cli v0.17.0, all ended as expected: the trades
-in `success` with Bob's 15 000-sat invoice settled, the canceled order in
-`canceled`.
+`tests/regtest_e2e.rs` runs this trade four ways (Bob or Alice publishes the
+order; Bob's invoice comes first or through `add_invoice` when the node asks),
+a cancel and a sync, and with bonds on, a taker who lets the wait time out and
+loses the bond while the seller claims her share with `add_bond_invoice`. On
+2026-11-07, with mostrod v0.20.2 and mostro-cli v0.17.0, all passed in both
+modes: the trades in `success` with Bob's 15 000 sats settled, the taker's bond
+paid on every take with bonds on, and Alice's 500-sat share of a slashed
+1 000-sat bond settled.
 
 ## Limitations
 

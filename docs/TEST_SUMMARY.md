@@ -98,3 +98,22 @@ maintainer for this session.
   `6cdced42…` is `success` on the node (`order info`) and Bob's 15 000-sat invoice is `SETTLED` in his LND. Seen on the way: `order mine`
   keeps Alice's last local status (`settled-hold-invoice`) after the node reports `success`; that is the CLI's local store, not this server.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` (no FAILED), build.
+
+## Follow-up: Buy-Side Trades And Bonds On Regtest: 2026-11-07
+
+Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-cli `v0.17.0` (debug build). Authorized by the maintainer.
+
+- **Regtest**: `MOSTRO_BONDS=1 devenv.sh up` writes the node's settings into `.state/mostrod.toml` (base settings, plus
+  `mostrod/bonds.toml`: taker bond of 1 % with a 1 000-sat floor, slashed on a waiting timeout, half to the counterparty; waiting states cut
+  to 60 s) and restarts mostrod when they change; without it the node goes back to no bonds.
+- **E2E**: the trade is now run four ways (Alice's sell order or Bob's buy order; Bob's invoice first or through `add_invoice`); a bond
+  the node asks of the taker is paid from the taker's wallet, and each trade asserts that a bond is asked exactly when bonds are on. New: a
+  taker who pays the bond and never sends the invoice is slashed after the timeout, and the seller claims her share with
+  `add_bond_invoice`; it skips itself without bonds.
+- **Found on the way**: the node sends the seller's payment step as two `pay-invoice` messages, first with the counterparty (`peer`), then
+  with the invoice (`payment_request`). The first run took the first one and failed (empty invoice), and its stuck order then made the next
+  take fail with `pending_order_exists`. The test now reads the `payment_request`. The `list_messages` description said "newest first";
+  the CLI lists oldest first, so the description is corrected and now names the two messages.
+- **Runs**: without bonds 7 passed (the slash test skipped) in 39 s; with bonds 7 passed in 256 s. Checked outside the tests: Alice's
+  500-sat share invoice is `SETTLED` and Bob's slashed 1 000-sat bond payment `SUCCEEDED`.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 89 + 11 passed, build.
