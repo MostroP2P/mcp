@@ -45,3 +45,9 @@ Native Linux, on `main` after `c0114db` (local). Lean mode.
 - **Mutation spot check**: dropping `--yes` from `take_order` failed its unit tests; restored.
 - **Not run**: no node or regtest; the real create/take path is covered by the CLI repository's own probes and by slice 5 when authorized.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` (no FAILED), build.
+- **Follow-up (2026-11-07, mostro-cli 0.17.0)**: unreadable output of `create_order` or `take_order` now starts with the no-retry warning (FR-001);
+  a read gets none. 1 unit test, red first; mutation: passing `false` from the write path failed it, restored. README: mostro-cli 0.17.0 or later
+  instead of a commit pin, `identity init` before use, JSON results, redaction and bounds as implemented, the walk-through's remaining CLI steps in
+  the new syntax; the library-route section, superseded by this spec, removed. Smoke run against mostro-cli `v0.17.0` (offline: empty `MCLI_DIR`,
+  a closed local relay port): the contract check passed with writes on, and the four tools reached the CLI with flags it accepted
+  (`identity_missing`, `relay_connection_failed`, never `invalid_arguments`). Gates: fmt, clippy `-D warnings`, `cargo test` 70 + 9 passed, build.

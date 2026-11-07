@@ -184,7 +184,7 @@ cmd_up() {
   mkdir -p "$STATE_DIR/alice" "$STATE_DIR/bob"
   chmod 700 "$STATE_DIR" "$STATE_DIR/alice" "$STATE_DIR/bob"
   info "ready — mostrod pubkey $MOSTRO_PUBKEY, relay $RELAYS"
-  info "try: $0 cli alice listorders"
+  info "try: $0 cli alice identity init, then: $0 cli alice order list"
 }
 
 cmd_status() {

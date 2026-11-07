@@ -11,7 +11,7 @@ use rmcp::{
 
 use crate::cli_backend::CliRunner;
 use crate::error::{Error, Result as MostroResult};
-use crate::outcome::{Outcome, excerpt};
+use crate::outcome::{Outcome, UNCERTAIN_WARNING, excerpt};
 use crate::tools::{
     create_order::{self, CreateOrderParams},
     get_order::{self, GetOrderParams},
@@ -130,9 +130,20 @@ impl<R: CliRunner> MostroServer<R> {
 }
 
 impl<R: CliRunner> MostroServer<R> {
-    /// Runs the CLI with `args` when they were built; every failure becomes a
-    /// tool error the agent can read.
+    /// Runs a read-only tool's command.
     async fn execute(&self, args: MostroResult<Vec<String>>) -> CallToolResult {
+        self.run_tool(args, false).await
+    }
+
+    /// Runs the CLI with `args` when they were built; every failure becomes a
+    /// tool error the agent can read. A state-changing command whose output
+    /// cannot be read did run, so it may have reached the node: that error
+    /// starts with the same no-retry warning as an `uncertain` outcome.
+    async fn run_tool(
+        &self,
+        args: MostroResult<Vec<String>>,
+        state_changing: bool,
+    ) -> CallToolResult {
         let args = match args {
             Ok(args) => args,
             Err(error) => return tool_error(&error),
@@ -151,11 +162,17 @@ impl<R: CliRunner> MostroServer<R> {
                         .map_or("it was stopped by a signal".to_string(), |code| {
                             format!("exit status: {code}")
                         });
-                    tool_error(&Error::CliFailed {
+                    let text = error_text(&Error::CliFailed {
                         status: format!("{status}; {reason}"),
                         stderr: run.stderr,
                         stdout: excerpt(&run.stdout),
-                    })
+                    });
+                    let text = if state_changing {
+                        format!("{UNCERTAIN_WARNING}\n\n{text}")
+                    } else {
+                        text
+                    };
+                    CallToolResult::error(vec![ContentBlock::text(text)])
                 }
             },
             Err(error) => {
@@ -174,18 +191,21 @@ impl<R: CliRunner> MostroServer<R> {
         if !self.allow_writes {
             return tool_error(&Error::WritesDisabled);
         }
-        self.execute(build()).await
+        self.run_tool(build(), true).await
     }
 }
 
 fn tool_error(error: &Error) -> CallToolResult {
-    let text = match error {
+    CallToolResult::error(vec![ContentBlock::text(error_text(error))])
+}
+
+fn error_text(error: &Error) -> String {
+    match error {
         Error::CliFailed { stdout, .. } if !stdout.trim().is_empty() => {
             format!("{error}\n\nmostro-cli output:\n{stdout}")
         }
         _ => error.to_string(),
-    };
-    CallToolResult::error(vec![ContentBlock::text(text)])
+    }
 }
 
 #[tool_handler]
@@ -402,6 +422,31 @@ mod tests {
             "{body}"
         );
         assert!(body.contains("not a document"), "the excerpt: {body}");
+    }
+
+    #[tokio::test]
+    async fn unreadable_output_of_a_write_is_warned_like_an_uncertain_one() {
+        let cli = Arc::new(FakeCli::answering(|| {
+            Ok(CliRun {
+                stdout: "not a document".into(),
+                stderr: String::new(),
+                code: Some(1),
+            })
+        }));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let created = server.create_order(Parameters(sell_order())).await;
+        assert_eq!(created.is_error, Some(true));
+        let body = text_of(&created);
+        assert!(
+            body.starts_with(crate::outcome::UNCERTAIN_WARNING),
+            "{body}"
+        );
+        assert!(body.contains("not one JSON"), "{body}");
+        // A read changes nothing on the node: no warning.
+        let listed = server
+            .list_orders(Parameters(ListOrdersParams::default()))
+            .await;
+        assert!(!text_of(&listed).starts_with(crate::outcome::UNCERTAIN_WARNING));
     }
 
     #[tokio::test]

@@ -2,8 +2,8 @@
 
 An [MCP](https://modelcontextprotocol.io) server that lets AI agents use
 [Mostro](https://mostro.network), the peer-to-peer Bitcoin/Lightning exchange
-over Nostr. It is a prototype: it drives `mostro-cli` as a subprocess, to prove
-the architecture end to end before any refactor.
+over Nostr. It drives `mostro-cli` as a subprocess through the CLI's versioned
+JSON interface (`--output json`).
 
 ```text
 MCP client / agent ──MCP (stdio)──▶ mostro-mcp ──subprocess──▶ mostro-cli ──Nostr──▶ mostrod
@@ -12,10 +12,15 @@ MCP client / agent ──MCP (stdio)──▶ mostro-mcp ──subprocess──�
 ## Requirements
 
 - Rust 1.88+ (built and tested with 1.99).
-- [`mostro-cli`](https://github.com/MostroP2P/mostro-cli) at commit `7944e82` or
-  later (0.16.3 plus the take fix, mostro-cli#205). `cargo build --release` in
-  its checkout. An older CLI exits 1 after taking a sell order with an invoice
-  and strands that trade on the client (mostro-cli#204).
+- [`mostro-cli`](https://github.com/MostroP2P/mostro-cli) **0.17.0 or later**,
+  the first release whose commands answer in JSON. At startup the server runs
+  `mostro-cli --output json schema` once and refuses to start, naming what is
+  missing, unless the CLI lists every command the enabled tools need with JSON
+  output. An older CLI stops it with "predates the JSON interface".
+- An identity in the CLI's data directory (`MCLI_DIR`): the JSON commands never
+  create one. Create it once with `mostro-cli identity init`; `mostro-cli
+  identity show` prints its public key. Without one every tool answers
+  `identity_missing`.
 - For the regtest network: Docker with Compose v2, `jq`.
 
 ## Build and test
@@ -95,9 +100,15 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 | `take_order` | no | `order take-sell` / `order take-buy` | `order_id`, `order_kind` (the order's side, never guessed), `fiat_amount?` (range orders), `invoice?` (taking a sell only) |
 
 Each tool advertises a JSON schema and MCP annotations (`readOnlyHint`). Every
-failure is a tool error (`isError: true`) whose text says what to fix; a CLI
-failure includes the CLI's own output. Results are the CLI's text output, with
-ANSI codes stripped.
+failure is a tool error (`isError: true`) whose text says what to fix.
+
+A result is the CLI's JSON outcome document, as text and as structured content:
+`status` `ok` is a result; `error` is a tool error carrying `error.code`;
+`uncertain` (the request may have reached the node) is a tool error whose text
+starts with a warning not to retry before checking the state. Output that is
+not exactly one outcome document, or that disagrees with the CLI's exit status,
+is a tool error with a cleaned excerpt, under the same warning when the tool is
+state-changing.
 
 ## Security
 
@@ -106,7 +117,7 @@ ANSI codes stripped.
   independently of any confirmation the MCP host shows. Refused calls never
   start the CLI.
 - **No shell, no arbitrary commands.** The CLI is spawned directly with one
-  argument per value, from a fixed allow-list of four commands. Every value is
+  argument per value, from a fixed allow-list of commands. Every value is
   passed as `--flag=value`, so a value starting with `-` can never become a
   flag. Order ids, fiat codes, invoices and free text are validated before the
   process starts.
@@ -114,16 +125,19 @@ ANSI codes stripped.
   The CLI starts with a cleared environment: the node configuration plus
   `PATH`, `HOME`, `USER`, `TMPDIR`, locale and TLS-certificate variables, so
   `ADMIN_NSEC`, `MOSTRO_RPC_TOKEN` or any other exported secret never reaches
-  it. Output is scanned and anything shaped like an `nsec1…` is redacted before
-  it reaches the client.
+  it. Anything shaped like an `nsec1…` is redacted before it reaches the
+  client: in the raw output, and again in every string of the parsed document
+  (a JSON escape can hide the prefix from the first pass).
 - **The side of a take is checked twice.** `order_kind` is required (never
   guessed), and the node itself refuses a take of the wrong side
   (`InvalidOrderKind`, verified on regtest: the order stays `pending`).
 - **One CLI run at a time.** Calls are serialized: every run shares the CLI's
   SQLite database and its next trade-key index.
-- **Bounded output.** stdout and stderr are cut at 64 KiB each.
-- **No blind retries.** A timeout or a failed take says the command may have
-  reached the node and asks the agent to check before retrying.
+- **Bounded output.** A document over 256 KiB is refused whole, never cut;
+  stderr is shown cut at 64 KiB.
+- **No blind retries.** A timeout, an `uncertain` outcome, or unreadable
+  output of a state-changing tool says the command may have reached the node
+  and asks the agent to check before retrying.
 - **stdout is the protocol.** Logs go to stderr only.
 - `MCLI_DIR` holds the identity's mnemonic: keep it `0700`, out of backups you
   share and out of anything an LLM can read.
@@ -152,6 +166,8 @@ drive their wallets.
 ### A full trade through the MCP server
 
 ```bash
+regtest/devenv.sh cli alice identity init   # once per user
+regtest/devenv.sh cli bob identity init
 export MOSTRO_MCP_ALLOW_WRITES=true
 # Alice publishes a sell order (MCP)
 (eval "$(regtest/devenv.sh env alice)"; cargo run -q --example mcp_call -- create_order \
@@ -160,26 +176,23 @@ export MOSTRO_MCP_ALLOW_WRITES=true
 (eval "$(regtest/devenv.sh env bob)"; cargo run -q --example mcp_call -- take_order \
   "{\"order_id\":\"<id>\",\"order_kind\":\"sell\",\"invoice\":\"$(regtest/devenv.sh invoice bob 15000)\"}")
 # The rest of the lifecycle is not exposed as tools yet: mostro-cli
-regtest/devenv.sh cli alice getdm           # Alice's hold invoice
+regtest/devenv.sh cli alice message list --order <id>   # Alice's hold invoice
 regtest/devenv.sh pay alice <hold invoice>
-regtest/devenv.sh cli bob fiatsent -o <id>
-regtest/devenv.sh cli alice release -o <id>
+regtest/devenv.sh cli bob order fiat-sent --order <id> --yes
+regtest/devenv.sh cli alice order release --order <id> --yes
 ```
 
 Taking without `invoice` works too: the node then asks for one, and Bob sends
-it with `regtest/devenv.sh cli bob addinvoice -o <id> -i <bolt11>`.
+it with `regtest/devenv.sh cli bob order add-invoice --order <id> --invoice <bolt11> --yes`.
 
-Both ways were run on 2026-10-14 and ended in `success`, read back through
+With the earlier text-output server and mostro-cli `7944e82`, both ways were
+run on 2026-10-14 and ended in `success`, read back through
 `get_order` and `list_orders`: order `52f8d0fe…` (take, then `addinvoice`) and
 order `aa1b2c87…` (take with the invoice, mostro-cli `7944e82`), with Bob's
 invoices settled for 15 000 and 11 000 sats.
 
 ## Limitations
 
-- **Text output.** `mostro-cli` has no machine-readable output: results are
-  its tables. The server does not parse them; that would break on any change
-  to emoji, spacing or columns. Structured results need a JSON mode in the CLI,
-  or the library route below.
 - **`get_order` only describes your own orders.** The daemon answers
   `order info` per identity; another user's order returns *Resource not found*.
   Use `list_orders` for the book.
@@ -192,23 +205,3 @@ invoices settled for 15 000 and 11 000 sats.
 - **Four tools.** `add_invoice`, `fiat_sent`, `release`, `cancel`, `dispute`,
   messages and ratings are still CLI-only.
 - **One identity per server process**, the one in `MCLI_DIR`.
-
-## Next step: the library route
-
-`mostro-cli` is already split into a library, `mostro_client` (`[lib]` in its
-`Cargo.toml`), exposing `db` (identity, keys, orders), `util::net::connect_nostr`,
-`util::messaging::{send_dm, wait_for_dm}`, `util::events::fetch_events_list`,
-`parser` and `cli`. The obstacle is output: the `cli::execute_*` functions
-print their results (about 290 `println!` across `cli/` and `parser/`) instead of
-returning them. The extraction worth doing:
-
-1. Make the `execute_*` functions return typed results; move printing to the
-   binary. The CLI keeps its behaviour, and the `WaitingSellerToPay` bug above
-   gets fixed on the way.
-2. Have mostro-mcp depend on `mostro_client` instead of spawning it: structured
-   JSON results (`fetch_events_list` already returns events), one Nostr
-   connection per server instead of per call, real errors instead of exit codes.
-3. Add the remaining lifecycle tools on top.
-
-Until then the subprocess backend stays: it works today against an unmodified
-CLI and node.
