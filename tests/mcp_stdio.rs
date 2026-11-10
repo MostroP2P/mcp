@@ -99,7 +99,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-async fn a_client_discovers_twelve_typed_tools() {
+async fn a_client_discovers_fifteen_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -120,6 +120,8 @@ async fn a_client_discovers_twelve_typed_tools() {
         "errors.html",
         "reference/actions.html",
         "flows/uncertain.html",
+        "watch_order",
+        "read_chat",
     ] {
         assert!(
             instructions.contains(reference),
@@ -142,9 +144,12 @@ async fn a_client_discovers_twelve_typed_tools() {
             "list_messages",
             "list_my_orders",
             "list_orders",
+            "read_chat",
             "release",
+            "send_chat",
             "sync_orders",
-            "take_order"
+            "take_order",
+            "watch_order"
         ]
     );
 
@@ -154,6 +159,12 @@ async fn a_client_discovers_twelve_typed_tools() {
     let release = tools.iter().find(|t| t.name == "release").unwrap();
     let schema = serde_json::to_value(&release.input_schema).unwrap();
     assert_eq!(schema["required"], json!(["order_id", "fiat_received"]));
+    let watch = tools.iter().find(|t| t.name == "watch_order").unwrap();
+    let schema = serde_json::to_value(&watch.input_schema).unwrap();
+    assert_eq!(schema["required"], json!(["order_id"]));
+    let send = tools.iter().find(|t| t.name == "send_chat").unwrap();
+    let schema = serde_json::to_value(&send.input_schema).unwrap();
+    assert_eq!(schema["required"], json!(["order_id", "message"]));
 
     client.cancel().await.unwrap();
 }
@@ -311,7 +322,7 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
         "{}",
         text(&result)
     );
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 15);
     client.cancel().await.unwrap();
 }
 
@@ -390,7 +401,7 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("is not an order id"));
 
     // The server is still serving afterwards.
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 15);
     client.cancel().await.unwrap();
 }
 
@@ -465,6 +476,36 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
             ],
         ),
         ("sync_orders", json!({}), vec!["order", "sync"]),
+        (
+            "watch_order",
+            json!({"order_id": id, "wait_seconds": 5}),
+            vec![
+                "order",
+                "watch",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--timeout=5",
+            ],
+        ),
+        (
+            "read_chat",
+            json!({"order_id": id}),
+            vec![
+                "order",
+                "chat",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+            ],
+        ),
+        (
+            "send_chat",
+            json!({"order_id": id, "message": "Alias: mi.alias.belo"}),
+            vec![
+                "order",
+                "chat",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--message=Alias: mi.alias.belo",
+                "--yes",
+            ],
+        ),
     ] {
         let result = call(&client, tool, args).await;
         assert_ne!(result.is_error, Some(true), "{tool}: {}", text(&result));
@@ -509,6 +550,30 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
             "add_bond_invoice",
             json!({"order_id": "00000000-0000-0000-0000-000000000001", "invoice": "lnbcrt1p"}),
             "invoice_accepted",
+        ),
+        (
+            "watch_new_records",
+            "watch_order",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
+            "\"cursor\"",
+        ),
+        (
+            "chat_read",
+            "read_chat",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
+            "Received, releasing now.",
+        ),
+        (
+            "chat_counterparty_unknown",
+            "read_chat",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
+            "counterparty_unknown",
+        ),
+        (
+            "chat_send_uncertain",
+            "send_chat",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001", "message": "hola"}),
+            "UNCERTAIN",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();

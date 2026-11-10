@@ -6,6 +6,7 @@
 //! then stays a value and can never be read by the CLI as another flag.
 
 pub mod add_invoice;
+pub mod chat;
 pub mod create_order;
 pub mod get_order;
 pub mod list_messages;
@@ -14,6 +15,7 @@ pub mod list_orders;
 pub mod sync_orders;
 pub mod take_order;
 pub mod trade_step;
+pub mod watch_order;
 
 use std::fmt::Display;
 

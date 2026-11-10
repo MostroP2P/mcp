@@ -11,7 +11,14 @@ use crate::error::{Error, Result};
 use crate::outcome::{Outcome, Status};
 
 /// The canonical commands the read-only tools need.
-const READ: [&str; 4] = ["order.list", "order.info", "order.mine", "message.list"];
+const READ: [&str; 6] = [
+    "order.list",
+    "order.info",
+    "order.mine",
+    "message.list",
+    "order.watch",
+    "order.chat",
+];
 
 /// The canonical commands the state-changing tools need.
 const WRITE: [&str; 9] = [
@@ -164,7 +171,14 @@ mod tests {
     fn the_writes_are_required_only_when_enabled() {
         assert_eq!(
             required(false),
-            ["order.list", "order.info", "order.mine", "message.list"]
+            [
+                "order.list",
+                "order.info",
+                "order.mine",
+                "message.list",
+                "order.watch",
+                "order.chat"
+            ]
         );
         for write in [
             "order.take-sell",
