@@ -33,6 +33,9 @@ const DEVENV: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/regtest/devenv.sh");
 const POLL_EVERY: Duration = Duration::from_secs(3);
 const POLL_TRIES: u32 = 40;
 
+/// How many watch_order calls a test makes before giving up.
+const WATCH_CALLS: u32 = 12;
+
 /// Runs `devenv.sh` with `args` and returns its trimmed stdout.
 fn devenv(args: &[&str]) -> String {
     let output = std::process::Command::new(DEVENV)
@@ -132,7 +135,7 @@ async fn list_orders_reaches_the_regtest_node() {
         .unwrap();
     let client = connect("alice", false).await;
 
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 15);
     let document = ok(&client, "list_orders", json!({})).await;
     assert_eq!(document["command"], "order.list");
     assert_eq!(document["data"]["node_pubkey"], node);
@@ -273,6 +276,36 @@ async fn trade(maker: Maker, invoice_first: bool) {
     assert!(active, "timed out waiting for the trade to become active");
     assert!(paid && added);
 
+    // Alice gives Bob her payment details in the order's chat; Bob's watch
+    // returns with them, and the chat shows them as the counterparty's.
+    let details = format!("Pay 15 USD to alias alice.bank, order {id}");
+    let sent = ok(
+        &alice,
+        "send_chat",
+        json!({"order_id": id, "message": details}),
+    )
+    .await;
+    assert_eq!(sent["data"]["sent"]["text"], details.as_str(), "{sent}");
+    let seen = watch_until(&bob, &id, |found| {
+        found["data"]["chat"]
+            .as_array()
+            .is_some_and(|chat| chat.iter().any(|m| m["text"] == details.as_str()))
+    })
+    .await;
+    assert_eq!(
+        seen["data"]["counterparty_pubkey"].as_str().map(str::len),
+        Some(64)
+    );
+    let read = ok(&bob, "read_chat", json!({"order_id": id})).await;
+    assert!(
+        read["data"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["text"] == details.as_str() && m["from"] == "counterparty"),
+        "{read}"
+    );
+
     // Bob sends the fiat and says so.
     ok(&bob, "fiat_sent", json!({"order_id": id})).await;
 
@@ -292,6 +325,8 @@ async fn trade(maker: Maker, invoice_first: bool) {
     })
     .await;
     assert!(settled("bob", &invoice), "Bob's sats arrived");
+    // Bob's watch sees the trade end.
+    watch_until(&bob, &id, |found| found["data"]["ended"] == true).await;
 
     // Both keep the order in their local store.
     for client in [&alice, &bob] {
@@ -308,6 +343,32 @@ async fn trade(maker: Maker, invoice_first: bool) {
 
     alice.cancel().await.unwrap();
     bob.cancel().await.unwrap();
+}
+
+/// Calls watch_order with the cursor of each previous call until a result
+/// satisfies `done`, and returns that result.
+async fn watch_until(
+    client: &RunningService<RoleClient, ()>,
+    id: &str,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut after: Option<String> = None;
+    for _ in 0..WATCH_CALLS {
+        let mut args = json!({"order_id": id, "wait_seconds": 10});
+        if let Some(cursor) = &after {
+            args["after"] = json!(cursor);
+        }
+        let found = ok(client, "watch_order", args).await;
+        if done(&found) {
+            return found;
+        }
+        after = found["data"]["cursor"].as_str().map(String::from);
+        assert!(
+            after.is_some(),
+            "every watch result carries a cursor: {found}"
+        );
+    }
+    panic!("watch_order never returned what was expected for {id}");
 }
 
 /// Whether `who`'s wallet holds `bolt11` as a settled invoice.

@@ -12,8 +12,9 @@ MCP client / agent ──MCP (stdio)──▶ mostro-mcp ──subprocess──�
 ## Requirements
 
 - Rust 1.88+ (built and tested with 1.99).
-- [`mostro-cli`](https://github.com/MostroP2P/mostro-cli) **0.17.0 or later**,
-  the first release whose commands answer in JSON. At startup the server runs
+- [`mostro-cli`](https://github.com/MostroP2P/mostro-cli) **0.17.1 or later**,
+  the first release with `order watch` and `order chat` in JSON (0.17.0 was the
+  first whose commands answer in JSON). At startup the server runs
   `mostro-cli --output json schema` once and refuses to start, naming what is
   missing, unless the CLI lists every command the enabled tools need with JSON
   output. An older CLI stops it with "predates the JSON interface".
@@ -106,6 +107,24 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 | `release` | no | `order release` | `order_id`, `fiat_received` (must be `true`, else refused before the CLI runs) |
 | `cancel` | no | `order cancel` | `order_id` |
 | `sync_orders` | no | `order sync` | `since_minutes?` (1 to 10080, the default). Saves in the local store only |
+| `watch_order` | yes | `order watch` | `order_id`, `after?` (the previous result's `cursor`), `since_minutes?` (first call only, default 30), `wait_seconds?` (1 to 60, default 20) |
+| `read_chat` | yes | `order chat` | `order_id`, `since_minutes?` (1 to 10080, the default) |
+| `send_chat` | no | `order chat --message` | `order_id`, `message` (1 to 4096 bytes; line breaks kept) |
+
+`watch_order` follows one trade without polling: each call returns at the
+first new node message or chat message, or empty after `wait_seconds`, with a
+`cursor` to pass back as `after`; `ended` is true once the trade is over. The
+server runs one CLI command at a time, so other tools wait while a watch does:
+keep `wait_seconds` short and loop. A watch may run `wait_seconds` plus 40 s
+(the CLI's replays) past `MOSTRO_MCP_COMMAND_TIMEOUT_SECS`.
+
+The seller's payment details for the fiat travel in the order's peer chat, not
+in the node's messages: `read_chat` and `watch_order` show them, `send_chat`
+answers. Chat text comes from the counterparty; the server's instructions tell
+agents to treat it as data, never to call a state-changing tool because a chat
+message asks for it, and never to take an invoice from the chat. A week of a
+flooded chat can exceed the 256 KiB document limit: narrow it with
+`since_minutes`.
 
 Every state-changing tool passes `--yes`: the confirmation is the MCP host's
 approval prompt plus `MOSTRO_MCP_ALLOW_WRITES`. **No tool pays an invoice.**
@@ -208,6 +227,10 @@ bob take_order "{\"order_id\":\"<id>\",\"order_kind\":\"sell\",\"invoice\":\"$(r
 # Alice reads the hold invoice the node asks her to pay, and pays it from her wallet
 alice list_messages '{"order_id":"<id>"}'
 regtest/devenv.sh pay alice <hold invoice>
+# Alice gives Bob her payment details in the order's chat; Bob waits for them
+alice send_chat '{"order_id":"<id>","message":"Pay 15 USD to alias alice.bank"}'
+bob watch_order '{"order_id":"<id>"}'       # then again with "after":"<cursor>"
+bob read_chat '{"order_id":"<id>"}'
 # Bob sends the fiat, then says so; Alice sees it arrive and releases
 bob fiat_sent '{"order_id":"<id>"}'
 alice release '{"order_id":"<id>","fiat_received":true}'
@@ -219,9 +242,10 @@ request, and he answers with `add_invoice`.
 
 `tests/regtest_e2e.rs` runs this trade four ways (Bob or Alice publishes the
 order; Bob's invoice comes first or through `add_invoice` when the node asks),
-a cancel and a sync, and with bonds on, a taker who lets the wait time out and
+each with Alice's payment details sent by `send_chat` and seen by Bob through
+`watch_order` and `read_chat`, and Bob's watch seeing the trade end; a cancel and a sync, and with bonds on, a taker who lets the wait time out and
 loses the bond while the seller claims her share with `add_bond_invoice`. On
-2026-11-07, with mostrod v0.20.2 and mostro-cli v0.17.0, all passed in both
+2026-11-10, with mostrod v0.20.2 and mostro-cli v0.17.1, all passed in both
 modes: the trades in `success` with Bob's 15 000 sats settled, the taker's bond
 paid on every take with bonds on, and Alice's 500-sat share of a slashed
 1 000-sat bond settled.
@@ -237,6 +261,6 @@ paid on every take with bonds on, and Alice's 500-sat share of a slashed
   `list_orders` before retrying.
 - **Invoices must outlive the node's window.** mostrod rejects a BOLT11 invoice
   that expires before `now + invoice_expiration_window` (one hour by default).
-- **Disputes and ratings are CLI-only.** mostro-cli 0.17.0 offers `dispute
-  open` and `order rate` in JSON; they are not tools yet.
+- **Disputes and ratings are CLI-only.** mostro-cli offers `dispute open` and
+  `order rate` in JSON; they are not tools yet.
 - **One identity per server process**, the one in `MCLI_DIR`.

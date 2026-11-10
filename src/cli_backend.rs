@@ -52,7 +52,19 @@ pub struct CliRun {
 /// What the tools need from the CLI: run it with these arguments. The server
 /// is generic over it so tests drive the tools without a subprocess.
 pub trait CliRunner: Send + Sync + 'static {
-    fn run(&self, args: Vec<String>) -> impl Future<Output = Result<CliRun>> + Send;
+    /// Runs the CLI, stopping it `extra` after the per-command timeout: a
+    /// command that waits on purpose (`order watch`) gets its own deadline on
+    /// top of the time every command needs.
+    fn run_waiting(
+        &self,
+        args: Vec<String>,
+        extra: Duration,
+    ) -> impl Future<Output = Result<CliRun>> + Send;
+
+    /// Runs the CLI within the per-command timeout.
+    fn run(&self, args: Vec<String>) -> impl Future<Output = Result<CliRun>> + Send {
+        self.run_waiting(args, Duration::ZERO)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,7 +130,7 @@ impl MostroCliBackend {
 }
 
 impl CliRunner for MostroCliBackend {
-    async fn run(&self, args: Vec<String>) -> Result<CliRun> {
+    async fn run_waiting(&self, args: Vec<String>, extra: Duration) -> Result<CliRun> {
         let _turn = self.turn.lock().await;
         let mut child = self.command(&args).spawn().map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Error::CliNotFound(self.binary.display().to_string()),
@@ -137,9 +149,10 @@ impl CliRunner for MostroCliBackend {
             Ok::<_, std::io::Error>((stdout, stderr, child.wait().await?))
         };
         // On timeout `finished` is dropped and `child` with it, which kills it.
-        let (stdout, stderr, status) = tokio::time::timeout(self.timeout, finished)
+        let limit = self.timeout.saturating_add(extra);
+        let (stdout, stderr, status) = tokio::time::timeout(limit, finished)
             .await
-            .map_err(|_| Error::Timeout(self.timeout))??;
+            .map_err(|_| Error::Timeout(limit))??;
         Ok(CliRun {
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: clean(&stderr),
@@ -379,6 +392,23 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn a_run_given_extra_time_outlasts_the_base_timeout_and_no_more() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = script(&dir, "sleep 0.4; echo done");
+        let backend = backend(cli, Duration::from_millis(200));
+        let run = backend
+            .run_waiting(vec![], Duration::from_millis(600))
+            .await
+            .unwrap();
+        assert_eq!(run.stdout.trim(), "done");
+        let err = backend
+            .run_waiting(vec![], Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Timeout(limit) if limit == Duration::from_millis(250)));
     }
 
     #[tokio::test]

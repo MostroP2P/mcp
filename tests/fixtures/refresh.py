@@ -20,6 +20,12 @@ PICK = {
     "bond_invoice_accepted": ("005-invoice-json", "bond_invoice_accepted"),
     "yes_required": ("007-trade-steps-json", "fiat_sent_yes_required"),
     "mine_newest_first": ("011-order-mine", "orders_newest_first"),
+    "chat_read": ("019-order-chat", "conversation_read"),
+    "chat_sent": ("019-order-chat", "message_sent"),
+    "chat_send_uncertain": ("019-order-chat", "send_uncertain"),
+    "chat_counterparty_unknown": ("019-order-chat", "counterparty_unknown"),
+    "watch_new_records": ("020-order-watch", "new_records"),
+    "watch_timeout_empty": ("020-order-watch", "timeout_empty"),
 }
 fixtures = {}
 for key, (spec, name) in sorted(PICK.items()):
