@@ -88,17 +88,22 @@ fn message(field: &'static str, text: &str) -> Result<String> {
     Ok(text.to_string())
 }
 
-/// Zero-width characters, direction marks, embeddings, overrides and
-/// isolates, and the byte-order mark.
+/// Characters that render as nothing or reorder text: the soft hyphen, the
+/// Mongolian vowel separator, zero-width characters, direction marks,
+/// embeddings, overrides and isolates, the deprecated format controls, the
+/// byte-order mark, and the tag characters (which can carry hidden ASCII).
+/// Variation selectors are kept: emoji need them.
 fn is_invisible_format(c: char) -> bool {
     matches!(
         c,
-        '\u{061C}'
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
             | '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
+            | '\u{2060}'..='\u{206F}'
             | '\u{FEFF}'
+            | '\u{E0000}'..='\u{E007F}'
     )
 }
 
@@ -195,8 +200,27 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_carriage_return_is_refused() {
+        let error = send_args(&send("a\rb")).unwrap_err().to_string();
+        assert!(error.contains("message"), "{error}");
+    }
+
+    #[test]
+    fn an_emoji_with_its_variation_selector_is_kept() {
+        assert!(send_args(&send("Gracias \u{2764}\u{FE0F}")).is_ok());
+    }
+
+    #[test]
     fn invisible_format_characters_that_hide_or_reorder_text_are_refused() {
-        for bad in ["pay a\u{202e}cba", "a\u{200b}b", "\u{2066}x\u{2069}"] {
+        for bad in [
+            "pay a\u{202e}cba",
+            "a\u{200b}b",
+            "\u{2066}x\u{2069}",
+            "a\u{00AD}b",
+            "a\u{180E}b",
+            "a\u{206A}b",
+            "ok\u{E0041}\u{E0042}",
+        ] {
             let error = send_args(&send(bad)).unwrap_err().to_string();
             assert!(error.contains("message"), "{bad:?}: {error}");
         }
