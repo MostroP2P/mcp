@@ -60,6 +60,14 @@ fn answer_with(dir: &tempfile::TempDir, name: &str) {
 }
 
 async fn connect(cli: &Path, allow_writes: bool) -> RunningService<RoleClient, ()> {
+    connect_with(cli, allow_writes, &[]).await
+}
+
+async fn connect_with(
+    cli: &Path,
+    allow_writes: bool,
+    extra_env: &[(&str, &str)],
+) -> RunningService<RoleClient, ()> {
     let transport = TokioChildProcess::new(
         tokio::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp")).configure(|cmd| {
             cmd.env_clear()
@@ -69,7 +77,8 @@ async fn connect(cli: &Path, allow_writes: bool) -> RunningService<RoleClient, (
                 .env("MOSTRO_MCP_ALLOW_WRITES", allow_writes.to_string())
                 // Must never reach the CLI, whatever the parent exports.
                 .env("ADMIN_NSEC", "nsec1shouldneverbeforwarded")
-                .env("SOME_OTHER_SECRET", "hunter2");
+                .env("SOME_OTHER_SECRET", "hunter2")
+                .envs(extra_env.iter().copied());
         }),
     )
     .expect("spawn mostro-mcp");
@@ -591,10 +600,14 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
 }
 
 /// The server with piped stdio, and a thread collecting its stderr.
-fn spawn_raw(cli: &Path) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+fn spawn_raw(
+    cli: &Path,
+    extra_env: &[(&str, &str)],
+) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
     use std::io::BufRead;
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
         .env_clear()
+        .envs(extra_env.iter().copied())
         .env("MOSTRO_CLI_PATH", cli)
         .env("MOSTRO_PUBKEY", NODE)
         .env("RELAYS", "ws://localhost:7000")
@@ -634,7 +647,7 @@ fn stderr_until(rx: &std::sync::mpsc::Receiver<String>, needle: &str) -> String 
 #[tokio::test]
 async fn a_termination_signal_is_logged_before_the_server_exits() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut child, stderr) = spawn_raw(&fake_cli(&dir));
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir), &[]);
     stderr_until(&stderr, "offers the JSON commands");
 
     let killed = std::process::Command::new("kill")
@@ -652,7 +665,7 @@ async fn a_termination_signal_is_logged_before_the_server_exits() {
 async fn a_client_that_closes_the_connection_is_logged() {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
-    let (mut child, stderr) = spawn_raw(&fake_cli(&dir));
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir), &[]);
     let mut stdin = child.stdin.take().unwrap();
     writeln!(
         stdin,
@@ -671,4 +684,51 @@ async fn a_client_that_closes_the_connection_is_logged() {
     let log = stderr_until(&stderr, "MCP session ended");
     assert!(log.contains("Closed"), "{log}");
     assert_eq!(child.wait().unwrap().code(), Some(0));
+}
+
+#[tokio::test]
+async fn the_log_file_shows_who_launched_the_server_and_every_tool_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("mcp.log");
+    let client = connect_with(
+        &fake_cli(&dir),
+        false,
+        &[("MOSTRO_MCP_LOG_FILE", log.to_str().unwrap())],
+    )
+    .await;
+    call(&client, "list_orders", json!({})).await;
+    call(&client, "get_order", json!({"order_id": "nope"})).await;
+    client.cancel().await.unwrap();
+
+    let mut text = String::new();
+    for _ in 0..50 {
+        text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.contains("MCP session ended") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    for needle in [
+        "starting mostro-mcp",
+        "ppid=",
+        "client initialized",
+        "client=\"rmcp\"",
+        "tool call tool=\"list_orders\"",
+        "tool call finished tool=\"list_orders\" outcome=\"ok\"",
+        "tool call finished tool=\"get_order\" outcome=\"error\"",
+        "elapsed_ms=",
+        "MCP session ended",
+    ] {
+        assert!(text.contains(needle), "{needle} missing from:\n{text}");
+    }
+}
+
+#[tokio::test]
+async fn a_heartbeat_marks_that_the_server_is_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir), &[("MOSTRO_MCP_HEARTBEAT_SECS", "1")]);
+    let log = stderr_until(&stderr, "alive");
+    assert!(log.contains("uptime_secs="), "{log}");
+    child.kill().unwrap();
+    child.wait().unwrap();
 }

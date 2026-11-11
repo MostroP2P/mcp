@@ -7,22 +7,20 @@ use mostro_mcp::{
     cli_backend::{CliRunner, MostroCliBackend},
     config::Config,
     contract,
+    diagnostics::{self, LogSettings},
     outcome::Outcome,
     server::MostroServer,
 };
 use rmcp::{ServiceExt, transport::stdio};
 use tokio::signal::unix::{SignalKind, signal};
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .with_env_filter(
-            EnvFilter::try_from_env("MOSTRO_MCP_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let log = LogSettings::from_env().context("invalid mostro-mcp configuration")?;
+    diagnostics::init(&log).context("invalid mostro-mcp configuration")?;
+    if let Some(interval) = log.heartbeat {
+        tokio::spawn(diagnostics::heartbeat(interval));
+    }
 
     // Installed first, so a signal at any point is logged: a client that kills
     // the server otherwise leaves no trace (SIGKILL cannot be caught).
@@ -43,6 +41,9 @@ async fn serve() -> anyhow::Result<()> {
         node = %config.mostro_pubkey,
         relays = ?config.relays,
         writes = config.allow_writes,
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        ppid = std::os::unix::process::parent_id(),
         "starting mostro-mcp"
     );
 

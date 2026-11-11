@@ -48,6 +48,8 @@ server never reads.
 | `MOSTRO_MCP_ALLOW_WRITES` | no | `true` / `1` / `yes` enables the state-changing tools. **Default off** |
 | `MOSTRO_MCP_COMMAND_TIMEOUT_SECS` | no | Per-command timeout, default 60, at least 30 (the CLI waits up to 15 s for the node's reply) |
 | `MOSTRO_MCP_LOG` | no | Log filter (stderr), default `info` |
+| `MOSTRO_MCP_LOG_FILE` | no | Also append the log to this file (for a host that discards stderr) |
+| `MOSTRO_MCP_HEARTBEAT_SECS` | no | Log `alive` every N seconds (1 to 3600). Off by default |
 
 An invalid value stops the server at startup with a message naming it. A
 switch that is neither true nor false is an error, so a typo can never enable
@@ -252,12 +254,23 @@ paid on every take with bonds on, and Alice's 500-sat share of a slashed
 
 ## Diagnosing a server that disappeared
 
-The log (stderr) says how each session ended: `MCP session ended` with
-`Closed` when the client closed the connection, or `stopped by a signal:
-SIGTERM` (also `SIGINT`, `SIGHUP`, exit status 128 + the signal) when something
-stopped the process. A server that vanished with neither line was killed with
-SIGKILL, which no process can catch: look at the client that launched it. A
-launcher script that logs its child's exit status records that case too.
+Set `MOSTRO_MCP_LOG_FILE` so the log survives a host that discards stderr.
+The log then answers four questions:
+
+- **Who launched it?** `starting mostro-mcp` carries the version, `pid` and
+  `ppid`; `client initialized` names the MCP client and its version.
+- **Did a call arrive?** Every call logs `tool call tool="…"` when it arrives
+  and `tool call finished` with `outcome` (`ok`, `error`, `rejected`) and
+  `elapsed_ms`. A tool that runs mostro-cli also logs `mostro-cli finished`
+  with the command.
+- **How did it end?** `MCP session ended reason=Closed` when the client closed
+  the connection; `stopped by a signal: SIGTERM` (also `SIGINT`, `SIGHUP`,
+  exit status 128 + the signal) when something stopped the process; `panic`
+  when the server crashed.
+- **When did it die?** A server that vanished with none of those lines was
+  killed with SIGKILL, which no process can catch: look at the client that
+  launched it. With `MOSTRO_MCP_HEARTBEAT_SECS` set, the last `alive` line
+  says until when it was running.
 
 ## Limitations
 
