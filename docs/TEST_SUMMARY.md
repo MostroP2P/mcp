@@ -145,7 +145,8 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
   `open_dispute` schema, the whole-trade argv, and four of the CLI's documents reaching the agent.
 - **Regtest** (mostrod v0.20.2, local network): a pending order is refused with `not_allowed_by_status`; Bob disputes an active trade,
   both sides see `dispute`, and a second dispute is `uncertain` / `reply_timeout`. `trade()` is split at `active` (`until_active`) so the
-  test reuses it. Without bonds, 7 passed in 59 s (`--skip loses_the_bond`). The review caught the listing test still expecting 15
+  test reuses it. Without bonds, 7 passed in 59 s (`--skip loses_the_bond`); with bonds (`MOSTRO_BONDS=1`), 8 passed in 286 s,
+  the dispute taken to `active` through a paid taker bond. The review caught the listing test still expecting 15
   tools. First run: every request was refused with `maintenance_mode`, because mostrod turns maintenance on when its LND has seen no
   block for 600 s and regtest only mines on demand. One `devenv.sh mine 1` cleared it after the node's 300 s recovery window.
 - **Mutation spot checks**: removing `dispute.open` from `WRITE` failed the contract test; bypassing the write gate failed the refusal
