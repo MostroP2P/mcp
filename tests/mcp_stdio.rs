@@ -589,3 +589,86 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
         client.cancel().await.unwrap();
     }
 }
+
+/// The server with piped stdio, and a thread collecting its stderr.
+fn spawn_raw(cli: &Path) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", cli)
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (lines, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    (child, rx)
+}
+
+/// Waits for a stderr line containing `needle`; returns every line read.
+fn stderr_until(rx: &std::sync::mpsc::Receiver<String>, needle: &str) -> String {
+    let mut seen = String::new();
+    while let Ok(line) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        seen.push_str(&line);
+        seen.push('\n');
+        if line.contains(needle) {
+            return seen;
+        }
+    }
+    panic!("no stderr line with `{needle}`:\n{seen}");
+}
+
+#[tokio::test]
+async fn a_termination_signal_is_logged_before_the_server_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir));
+    stderr_until(&stderr, "offers the JSON commands");
+
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+
+    let log = stderr_until(&stderr, "SIGTERM");
+    assert!(log.contains("stopped by a signal"), "{log}");
+    assert_eq!(child.wait().unwrap().code(), Some(128 + 15));
+}
+
+#[tokio::test]
+async fn a_client_that_closes_the_connection_is_logged() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir));
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"t","version":"0"}}}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .unwrap();
+    stderr_until(&stderr, "MCP session started");
+
+    drop(stdin);
+
+    let log = stderr_until(&stderr, "MCP session ended");
+    assert!(log.contains("Closed"), "{log}");
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}

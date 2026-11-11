@@ -250,6 +250,15 @@ modes: the trades in `success` with Bob's 15 000 sats settled, the taker's bond
 paid on every take with bonds on, and Alice's 500-sat share of a slashed
 1 000-sat bond settled.
 
+## Diagnosing a server that disappeared
+
+The log (stderr) says how each session ended: `MCP session ended` with
+`Closed` when the client closed the connection, or `stopped by a signal:
+SIGTERM` (also `SIGINT`, `SIGHUP`, exit status 128 + the signal) when something
+stopped the process. A server that vanished with neither line was killed with
+SIGKILL, which no process can catch: look at the client that launched it. A
+launcher script that logs its child's exit status records that case too.
+
 ## Limitations
 
 - **`get_order` only describes your own orders.** The daemon answers

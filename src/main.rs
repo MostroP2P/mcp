@@ -11,6 +11,7 @@ use mostro_mcp::{
     server::MostroServer,
 };
 use rmcp::{ServiceExt, transport::stdio};
+use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -23,6 +24,19 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Installed first, so a signal at any point is logged: a client that kills
+    // the server otherwise leaves no trace (SIGKILL cannot be caught).
+    let stopped = stop_signal()?;
+    tokio::select! {
+        result = serve() => result,
+        (name, number) = stopped => {
+            tracing::warn!(signal = name, "stopped by a signal: {name}");
+            std::process::exit(128 + number);
+        }
+    }
+}
+
+async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env().context("invalid mostro-mcp configuration")?;
     tracing::info!(
         cli = %config.cli_path.display(),
@@ -39,8 +53,25 @@ async fn main() -> anyhow::Result<()> {
         .serve(stdio())
         .await
         .context("MCP handshake failed")?;
-    service.waiting().await?;
+    tracing::info!("MCP session started");
+    // `Closed`: the client closed stdin; `Cancelled`: the service stopped itself.
+    let reason = service.waiting().await?;
+    tracing::info!(?reason, "MCP session ended");
     Ok(())
+}
+
+/// Resolves to the name and number of the first termination signal received.
+fn stop_signal() -> anyhow::Result<impl Future<Output = (&'static str, i32)>> {
+    let mut term = signal(SignalKind::terminate()).context("listen for SIGTERM")?;
+    let mut int = signal(SignalKind::interrupt()).context("listen for SIGINT")?;
+    let mut hup = signal(SignalKind::hangup()).context("listen for SIGHUP")?;
+    Ok(async move {
+        tokio::select! {
+            _ = term.recv() => ("SIGTERM", 15),
+            _ = int.recv() => ("SIGINT", 2),
+            _ = hup.recv() => ("SIGHUP", 1),
+        }
+    })
 }
 
 /// Stop here, with the missing commands named, if the installed `mostro-cli`
