@@ -26,6 +26,11 @@ PICK = {
     "chat_counterparty_unknown": ("019-order-chat", "counterparty_unknown"),
     "watch_new_records": ("020-order-watch", "new_records"),
     "watch_timeout_empty": ("020-order-watch", "timeout_empty"),
+    "dispute_opened": ("013-dispute-open", "dispute_opened"),
+    "dispute_status_stale": ("013-dispute-open", "dispute_opened_status_stale"),
+    "dispute_node_refused": ("013-dispute-open", "node_refused"),
+    "dispute_uncertain": ("013-dispute-open", "no_answer_uncertain"),
+    "dispute_order_unknown": ("013-dispute-open", "order_unknown"),
 }
 fixtures = {}
 for key, (spec, name) in sorted(PICK.items()):

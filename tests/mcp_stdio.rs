@@ -108,7 +108,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-async fn a_client_discovers_fifteen_typed_tools() {
+async fn a_client_discovers_sixteen_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -131,6 +131,7 @@ async fn a_client_discovers_fifteen_typed_tools() {
         "flows/uncertain.html",
         "watch_order",
         "read_chat",
+        "open_dispute",
     ] {
         assert!(
             instructions.contains(reference),
@@ -153,6 +154,7 @@ async fn a_client_discovers_fifteen_typed_tools() {
             "list_messages",
             "list_my_orders",
             "list_orders",
+            "open_dispute",
             "read_chat",
             "release",
             "send_chat",
@@ -174,6 +176,9 @@ async fn a_client_discovers_fifteen_typed_tools() {
     let send = tools.iter().find(|t| t.name == "send_chat").unwrap();
     let schema = serde_json::to_value(&send.input_schema).unwrap();
     assert_eq!(schema["required"], json!(["order_id", "message"]));
+    let dispute = tools.iter().find(|t| t.name == "open_dispute").unwrap();
+    let schema = serde_json::to_value(&dispute.input_schema).unwrap();
+    assert_eq!(schema["required"], json!(["order_id"]));
 
     client.cancel().await.unwrap();
 }
@@ -331,7 +336,7 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
         "{}",
         text(&result)
     );
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 15);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
     client.cancel().await.unwrap();
 }
 
@@ -410,7 +415,7 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("is not an order id"));
 
     // The server is still serving afterwards.
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 15);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
     client.cancel().await.unwrap();
 }
 
@@ -515,6 +520,16 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
                 "--yes",
             ],
         ),
+        (
+            "open_dispute",
+            json!({"order_id": id}),
+            vec![
+                "dispute",
+                "open",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--yes",
+            ],
+        ),
     ] {
         let result = call(&client, tool, args).await;
         assert_ne!(result.is_error, Some(true), "{tool}: {}", text(&result));
@@ -582,6 +597,30 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
             "chat_send_uncertain",
             "send_chat",
             json!({"order_id": "00000000-0000-0000-0000-000000000001", "message": "hola"}),
+            "UNCERTAIN",
+        ),
+        (
+            "dispute_opened",
+            "open_dispute",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
+            "00000000-0000-0000-0000-000000000d16",
+        ),
+        (
+            "dispute_node_refused",
+            "open_dispute",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
+            "not_allowed_by_status",
+        ),
+        (
+            "dispute_order_unknown",
+            "open_dispute",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
+            "order_unknown",
+        ),
+        (
+            "dispute_uncertain",
+            "open_dispute",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
             "UNCERTAIN",
         ),
     ] {

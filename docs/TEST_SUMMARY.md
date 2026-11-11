@@ -127,3 +127,29 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
   statuses, actions and uncertain-recovery pages. All six URLs answered 200.
 - **Test**: the stdio discovery test asserts that the instructions carry the book's URL; it failed before the change. Gates: fmt, clippy
   `-D warnings`, `cargo test` 89 + 11 passed.
+
+## Follow-up: Opening A Dispute (Issue #14): 2026-11-11
+
+- **Tool** (`src/tools/dispute.rs`, `server.rs`): `open_dispute` runs `dispute open --order=<uuid> --yes` behind the write gate. A timeout
+  or unreadable output carries the no-retry warning. Annotations: not read-only, not destructive, not idempotent, open world. The
+  description and the instructions leave the decision to the user, name the `active` / `fiat-sent` rule, and say never to resend on
+  `uncertain` (the node answers a second dispute with silence). `contract::WRITE` requires `dispute.open`. The dispute chat and
+  `listdisputes` are not wrapped: mostro-cli 0.17.1 prints them only for humans.
+- **Fixtures**: the five `dispute.open` examples of spec `013-dispute-open` at `v0.17.1` (opened, opened with `local_status_stale`,
+  `node_refused` / `not_allowed_by_status`, `uncertain` / `reply_timeout`, `order_unknown`). Before they were added, `refresh.py` reproduced
+  the current `outcomes.json` byte for byte.
+- **Tests**: written first and run red, first the unit tests (`todo!()` panics), then the server tests (no `open_dispute` method). Unit:
+  the exact argv, a lowercased id, a bad id refused. Server: refused by default without spawning, runs `dispute open`, the annotations
+  and description, an opened dispute's id and stale-status warning, a refusal that keeps the node's reason without the warning, a warned
+  `uncertain` and timeout, the instructions. Contract: `dispute.open` required with writes on. Stdio: discovery of sixteen tools and the
+  `open_dispute` schema, the whole-trade argv, and four of the CLI's documents reaching the agent.
+- **Regtest** (mostrod v0.20.2, local network): a pending order is refused with `not_allowed_by_status`; Bob disputes an active trade,
+  both sides see `dispute`, and a second dispute is `uncertain` / `reply_timeout`. `trade()` is split at `active` (`until_active`) so the
+  test reuses it. Without bonds, 7 passed in 59 s (`--skip loses_the_bond`). The review caught the listing test still expecting 15
+  tools. First run: every request was refused with `maintenance_mode`, because mostrod turns maintenance on when its LND has seen no
+  block for 600 s and regtest only mines on demand. One `devenv.sh mine 1` cleared it after the node's 300 s recovery window.
+- **Mutation spot checks**: removing `dispute.open` from `WRITE` failed the contract test; bypassing the write gate failed the refusal
+  and the warned-uncertain tests. Both restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 123 + 16 passed (8 regtest ignored), build. Also seen: one run of
+  `a_run_given_extra_time_outlasts_the_base_timeout_and_no_more` failed under load and passed three times on its own. It is a timing
+  test this change does not touch.

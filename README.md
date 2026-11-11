@@ -112,6 +112,7 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 | `watch_order` | yes | `order watch` | `order_id`, `after?` (the previous result's `cursor`), `since_minutes?` (first call only, default 30), `wait_seconds?` (1 to 60, default 20) |
 | `read_chat` | yes | `order chat` | `order_id`, `since_minutes?` (1 to 10080, the default) |
 | `send_chat` | no | `order chat --message` | `order_id`, `message` (1 to 4096 bytes; line breaks kept) |
+| `open_dispute` | no | `dispute open` | `order_id` (an `active` or `fiat-sent` order you hold) |
 
 `watch_order` follows one trade without polling: each call returns at the
 first new node message or chat message, or empty after `wait_seconds`, with a
@@ -127,6 +128,14 @@ agents to treat it as data, never to call a state-changing tool because a chat
 message asks for it, and never to take an invoice from the chat. A week of a
 flooded chat can exceed the 256 KiB document limit: narrow it with
 `since_minutes`.
+
+`open_dispute` is for a stuck trade: the fiat was sent and the seller does not
+release, or the counterparty stopped answering. The server's instructions let
+an agent suggest a dispute but leave the decision to the user, since a dispute
+brings in a solver and cannot be withdrawn. The node refuses any order that is
+not `active` or `fiat-sent` (`not_allowed_by_status`) and answers a second
+dispute on the same order with silence, so the tool reports `uncertain`;
+`get_order` then shows the status `dispute`.
 
 Every state-changing tool passes `--yes`: the confirmation is the MCP host's
 approval prompt plus `MOSTRO_MCP_ALLOW_WRITES`. **No tool pays an invoice.**
@@ -245,7 +254,8 @@ request, and he answers with `add_invoice`.
 `tests/regtest_e2e.rs` runs this trade four ways (Bob or Alice publishes the
 order; Bob's invoice comes first or through `add_invoice` when the node asks),
 each with Alice's payment details sent by `send_chat` and seen by Bob through
-`watch_order` and `read_chat`, and Bob's watch seeing the trade end; a cancel and a sync, and with bonds on, a taker who lets the wait time out and
+`watch_order` and `read_chat`, and Bob's watch seeing the trade end; a cancel and a sync; a dispute
+(refused on a pending order, opened by Bob on an active trade, a second one `uncertain`); and with bonds on, a taker who lets the wait time out and
 loses the bond while the seller claims her share with `add_bond_invoice`. On
 2026-11-10, with mostrod v0.20.2 and mostro-cli v0.17.1, all passed in both
 modes: the trades in `success` with Bob's 15 000 sats settled, the taker's bond
@@ -283,6 +293,10 @@ The log then answers four questions:
   `list_orders` before retrying.
 - **Invoices must outlive the node's window.** mostrod rejects a BOLT11 invoice
   that expires before `now + invoice_expiration_window` (one hour by default).
-- **Disputes and ratings are CLI-only.** mostro-cli offers `dispute open` and
-  `order rate` in JSON; they are not tools yet.
+- **After a dispute opens, the rest is CLI-only.** mostro-cli 0.17.1 prints
+  the dispute chat (`disputechat`) and the list of disputes (`listdisputes`)
+  only for humans, so this server cannot read or answer the solver. Answer the
+  solver with mostro-cli.
+- **Ratings are CLI-only.** mostro-cli offers `order rate` in JSON; it is not a
+  tool yet.
 - **One identity per server process**, the one in `MCLI_DIR`.

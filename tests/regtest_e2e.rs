@@ -135,7 +135,7 @@ async fn list_orders_reaches_the_regtest_node() {
         .unwrap();
     let client = connect("alice", false).await;
 
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 15);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
     let document = ok(&client, "list_orders", json!({})).await;
     assert_eq!(document["command"], "order.list");
     assert_eq!(document["data"]["node_pubkey"], node);
@@ -214,67 +214,12 @@ async fn invoice_asked(client: &RunningService<RoleClient, ()>, id: &str) -> Opt
 /// `invoice_first`, else when the node asks for it (`add_invoice`). Every
 /// payment, the taker's bond included, is made from the payer's own wallet.
 async fn trade(maker: Maker, invoice_first: bool) {
-    let alice = connect("alice", true).await;
-    let bob = connect("bob", true).await;
-    let invoice = devenv(&["invoice", "bob", "15000"]);
-    let (side, maker_client, taker_client, taker) = match maker {
-        Maker::Seller => ("sell", &alice, &bob, "bob"),
-        Maker::Buyer => ("buy", &bob, &alice, "alice"),
-    };
-
-    let mut order = json!({"kind": side, "fiat_code": "USD", "fiat_amount": 15,
-                           "payment_method": "bank transfer", "amount_sats": 15000});
-    if maker == Maker::Buyer && invoice_first {
-        order["invoice"] = json!(invoice);
-    }
-    let created = ok(maker_client, "create_order", order).await;
-    let id = created["data"]["order"]["id"]
-        .as_str()
-        .expect("the new order's id")
-        .to_string();
-
-    let mut take = json!({"order_id": id, "order_kind": side});
-    if maker == Maker::Seller && invoice_first {
-        take["invoice"] = json!(invoice);
-    }
-    let taken = ok(taker_client, "take_order", take).await;
-    let bonded = taken["data"]["next_step"] == "pay_bond_invoice";
-    assert_eq!(
-        bonded,
-        bonds_enabled(),
-        "a bond exactly when the node takes them: {taken}"
-    );
-    if bonded {
-        let bond = taken["data"]["payment_request"].as_str().unwrap();
-        devenv(&["pay", taker, bond]);
-    }
-
-    // The node asks Alice for the hold invoice, which she pays from her
-    // wallet, and Bob for his invoice if he gave none, in its own order.
-    let (mut paid, mut added) = (false, invoice_first);
-    let mut active = false;
-    for _ in 0..POLL_TRIES {
-        if !paid && let Some(hold) = invoice_asked(&alice, &id).await {
-            devenv(&["pay", "alice", &hold]);
-            paid = true;
-        }
-        if !added && asked(&bob, &id, "add_invoice").await.is_some() {
-            ok(
-                &bob,
-                "add_invoice",
-                json!({"order_id": id, "invoice": invoice}),
-            )
-            .await;
-            added = true;
-        }
-        if status(&bob, &id).await.as_deref() == Some("active") {
-            active = true;
-            break;
-        }
-        tokio::time::sleep(POLL_EVERY).await;
-    }
-    assert!(active, "timed out waiting for the trade to become active");
-    assert!(paid && added);
+    let ActiveTrade {
+        alice,
+        bob,
+        id,
+        invoice,
+    } = until_active(maker, invoice_first).await;
 
     // Alice gives Bob her payment details in the order's chat; Bob's watch
     // returns with them, and the chat shows them as the counterparty's.
@@ -343,6 +288,85 @@ async fn trade(maker: Maker, invoice_first: bool) {
 
     alice.cancel().await.unwrap();
     bob.cancel().await.unwrap();
+}
+
+/// A trade that reached `active`: both servers, the order and Bob's invoice.
+struct ActiveTrade {
+    alice: RunningService<RoleClient, ()>,
+    bob: RunningService<RoleClient, ()>,
+    id: String,
+    invoice: String,
+}
+
+/// Takes a trade of `maker`'s order up to `active`, as [`trade`] describes.
+async fn until_active(maker: Maker, invoice_first: bool) -> ActiveTrade {
+    let alice = connect("alice", true).await;
+    let bob = connect("bob", true).await;
+    let invoice = devenv(&["invoice", "bob", "15000"]);
+    let (side, maker_client, taker_client, taker) = match maker {
+        Maker::Seller => ("sell", &alice, &bob, "bob"),
+        Maker::Buyer => ("buy", &bob, &alice, "alice"),
+    };
+
+    let mut order = json!({"kind": side, "fiat_code": "USD", "fiat_amount": 15,
+                           "payment_method": "bank transfer", "amount_sats": 15000});
+    if maker == Maker::Buyer && invoice_first {
+        order["invoice"] = json!(invoice);
+    }
+    let created = ok(maker_client, "create_order", order).await;
+    let id = created["data"]["order"]["id"]
+        .as_str()
+        .expect("the new order's id")
+        .to_string();
+
+    let mut take = json!({"order_id": id, "order_kind": side});
+    if maker == Maker::Seller && invoice_first {
+        take["invoice"] = json!(invoice);
+    }
+    let taken = ok(taker_client, "take_order", take).await;
+    let bonded = taken["data"]["next_step"] == "pay_bond_invoice";
+    assert_eq!(
+        bonded,
+        bonds_enabled(),
+        "a bond exactly when the node takes them: {taken}"
+    );
+    if bonded {
+        let bond = taken["data"]["payment_request"].as_str().unwrap();
+        devenv(&["pay", taker, bond]);
+    }
+
+    // The node asks Alice for the hold invoice, which she pays from her
+    // wallet, and Bob for his invoice if he gave none, in its own order.
+    let (mut paid, mut added) = (false, invoice_first);
+    let mut active = false;
+    for _ in 0..POLL_TRIES {
+        if !paid && let Some(hold) = invoice_asked(&alice, &id).await {
+            devenv(&["pay", "alice", &hold]);
+            paid = true;
+        }
+        if !added && asked(&bob, &id, "add_invoice").await.is_some() {
+            ok(
+                &bob,
+                "add_invoice",
+                json!({"order_id": id, "invoice": invoice}),
+            )
+            .await;
+            added = true;
+        }
+        if status(&bob, &id).await.as_deref() == Some("active") {
+            active = true;
+            break;
+        }
+        tokio::time::sleep(POLL_EVERY).await;
+    }
+    assert!(active, "timed out waiting for the trade to become active");
+    assert!(paid && added);
+    ActiveTrade {
+        alice,
+        bob,
+        id,
+        invoice,
+    }
 }
 
 /// Calls watch_order with the cursor of each previous call until a result
@@ -476,4 +500,49 @@ async fn a_pending_order_is_canceled_and_sync_finds_nothing_missing() {
     let synced = ok(&alice, "sync_orders", json!({"since_minutes": 60})).await;
     assert_eq!(synced["command"], "order.sync", "{synced}");
     alice.cancel().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network (regtest/devenv.sh up)"]
+async fn the_buyer_disputes_an_active_trade_and_a_pending_order_is_refused() {
+    // A pending order cannot be disputed: the node refuses it.
+    let alice = connect("alice", true).await;
+    let created = ok(
+        &alice,
+        "create_order",
+        json!({"kind": "sell", "fiat_code": "USD", "fiat_amount": 5,
+               "payment_method": "bank transfer", "amount_sats": 5000}),
+    )
+    .await;
+    let pending = created["data"]["order"]["id"].as_str().unwrap().to_string();
+    let (refused, error) = call(&alice, "open_dispute", json!({"order_id": pending})).await;
+    assert!(error, "{refused}");
+    assert_eq!(refused["error"]["code"], "node_refused", "{refused}");
+    assert_eq!(
+        refused["error"]["reason"], "not_allowed_by_status",
+        "{refused}"
+    );
+    ok(&alice, "cancel", json!({"order_id": pending})).await;
+    alice.cancel().await.unwrap();
+
+    // Bob disputes the active trade; both sides see the order in dispute.
+    let ActiveTrade { alice, bob, id, .. } = until_active(Maker::Seller, true).await;
+    let opened = ok(&bob, "open_dispute", json!({"order_id": id})).await;
+    assert_eq!(opened["data"]["order_id"], id.as_str(), "{opened}");
+    assert!(opened["data"]["dispute_id"].is_string(), "{opened}");
+    for client in [&bob, &alice] {
+        poll("the dispute status", || async {
+            (status(client, &id).await.as_deref() == Some("dispute")).then_some(())
+        })
+        .await;
+    }
+
+    // A second dispute is answered with silence: uncertain, never an ok.
+    let (again, error) = call(&bob, "open_dispute", json!({"order_id": id})).await;
+    assert!(error, "{again}");
+    assert_eq!(again["status"], "uncertain", "{again}");
+    assert_eq!(again["error"]["code"], "reply_timeout", "{again}");
+
+    alice.cancel().await.unwrap();
+    bob.cancel().await.unwrap();
 }

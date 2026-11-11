@@ -21,7 +21,7 @@ const READ: [&str; 6] = [
 ];
 
 /// The canonical commands the state-changing tools need.
-const WRITE: [&str; 9] = [
+const WRITE: [&str; 10] = [
     "order.new",
     "order.take-sell",
     "order.take-buy",
@@ -31,6 +31,7 @@ const WRITE: [&str; 9] = [
     "order.release",
     "order.cancel",
     "order.sync",
+    "dispute.open",
 ];
 
 /// The commands the enabled tools need: the reads always, the writes only on a
@@ -181,6 +182,7 @@ mod tests {
             ]
         );
         for write in [
+            "dispute.open",
             "order.take-sell",
             "order.add-invoice",
             "bond.add-invoice",

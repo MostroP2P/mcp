@@ -17,6 +17,7 @@ use crate::tools::{
     add_invoice::{self, AddInvoiceParams},
     chat::{self, ReadChatParams, SendChatParams},
     create_order::{self, CreateOrderParams},
+    dispute,
     get_order::{self, GetOrderParams},
     list_messages::{self, ListMessagesParams},
     list_my_orders,
@@ -64,6 +65,14 @@ fiat arrived; irreversible). cancel withdraws an order or a trade; \
 add_bond_invoice claims a share of a slashed bond; sync_orders adopts orders \
 the node created for this identity (the next order of a range); send_chat \
 sends one message to the counterparty (show the user the text first).
+
+When a trade is stuck (the fiat was sent and the seller does not release, or \
+the counterparty stopped answering), you may suggest a dispute, but the user \
+decides: open_dispute only after the user asks for it. It brings in a solver \
+from the node and cannot be withdrawn. Only an `active` or `fiat-sent` order \
+can be disputed. After it opens, the solver leads the trade; this server \
+cannot read or write the dispute chat yet, so tell the user to answer the \
+solver with mostro-cli (`disputechat`).
 
 These tools never pay an invoice. When the node asks for a payment (a hold \
 invoice, a bond), give the invoice to the user to pay from their own wallet, \
@@ -346,6 +355,31 @@ impl<R: CliRunner> MostroServer<R> {
     async fn cancel(&self, Parameters(params): Parameters<OrderStepParams>) -> CallToolResult {
         self.execute_write(|| trade_step::cancel_args(&params))
             .await
+    }
+
+    #[tool(
+        description = "Open a dispute on an order you hold: a solver from the node \
+            takes over the trade. Only for an `active` or `fiat-sent` order (anything \
+            else is refused with `not_allowed_by_status`). STATE-CHANGING and cannot \
+            be withdrawn: call it only when the user asked for a dispute in this \
+            conversation, never on your own. Refused unless the server runs with \
+            MOSTRO_MCP_ALLOW_WRITES=true. On `uncertain`, never resend (the node \
+            answers a second dispute with silence): check get_order, whose status \
+            becomes `dispute`. The dispute chat with the solver is mostro-cli only \
+            (`disputechat`).",
+        annotations(
+            title = "Open dispute",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn open_dispute(
+        &self,
+        Parameters(params): Parameters<OrderStepParams>,
+    ) -> CallToolResult {
+        self.execute_write(|| dispute::open_args(&params)).await
     }
 
     #[tool(

@@ -8,6 +8,7 @@
 pub mod add_invoice;
 pub mod chat;
 pub mod create_order;
+pub mod dispute;
 pub mod get_order;
 pub mod list_messages;
 pub mod list_my_orders;
