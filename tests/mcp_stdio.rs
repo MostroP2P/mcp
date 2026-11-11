@@ -732,3 +732,27 @@ async fn a_heartbeat_marks_that_the_server_is_alive() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+#[tokio::test]
+async fn a_server_that_cannot_start_says_why_in_the_log_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("mcp.log");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", dir.path().join("no-such-cli"))
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .env("MOSTRO_MCP_LOG_FILE", &log)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("mostro-mcp stopped"), "{text}");
+    assert!(text.contains("could not run `mostro-cli schema`"), "{text}");
+    assert!(
+        text.contains("MOSTRO_CLI_PATH"),
+        "the cause, not just the context: {text}"
+    );
+}

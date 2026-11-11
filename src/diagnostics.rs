@@ -87,8 +87,12 @@ pub fn init(settings: &LogSettings) -> Result<()> {
         .with(stderr)
         .with(file)
         .init();
-    std::panic::set_hook(Box::new(|info| {
+    // Logged, then handed to the previous hook: it still prints the panic and
+    // the backtrace RUST_BACKTRACE asks for, whatever the log filter.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
         tracing::error!(%info, "panic");
+        previous(info);
     }));
     Ok(())
 }

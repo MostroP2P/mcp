@@ -26,7 +26,14 @@ async fn main() -> anyhow::Result<()> {
     // the server otherwise leaves no trace (SIGKILL cannot be caught).
     let stopped = stop_signal()?;
     tokio::select! {
-        result = serve() => result,
+        result = serve() => {
+            // Logged too: with MOSTRO_MCP_LOG_FILE the file must say why the
+            // server stopped, even when the host discards stderr.
+            if let Err(error) = &result {
+                tracing::error!("mostro-mcp stopped: {error:#}");
+            }
+            result
+        }
         (name, number) = stopped => {
             tracing::warn!(signal = name, "stopped by a signal: {name}");
             std::process::exit(128 + number);
