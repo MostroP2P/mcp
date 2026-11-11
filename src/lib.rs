@@ -8,6 +8,7 @@
 pub mod cli_backend;
 pub mod config;
 pub mod contract;
+pub mod diagnostics;
 pub mod error;
 pub mod outcome;
 pub mod server;

@@ -393,7 +393,8 @@ impl<R: CliRunner> MostroServer<R> {
             Ok(args) => args,
             Err(error) => return tool_error(&error),
         };
-        let command = args.first().cloned().unwrap_or_default();
+        // `order list`, not just `order`: the log must say which command ran.
+        let command = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
         match self.runner.run_waiting(args, extra).await {
             Ok(run) => match Outcome::parse(&run.stdout, run.code) {
                 Ok(outcome) => {
@@ -481,6 +482,57 @@ fn error_text(error: &Error) -> String {
 
 #[tool_handler]
 impl<R: CliRunner> ServerHandler for MostroServer<R> {
+    /// Every call is logged as it arrives and as it ends, so the log shows
+    /// whether a request reached the server and how long it took.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let tool = request.name.to_string();
+        tracing::info!(tool = tool.as_str(), "tool call");
+        let started = std::time::Instant::now();
+        let response = self
+            .tool_router
+            .call(rmcp::handler::server::tool::ToolCallContext::new(
+                self, request, context,
+            ))
+            .await;
+        let outcome = match &response {
+            Ok(rmcp::model::CallToolResponse::Complete(result))
+                if result.is_error == Some(true) =>
+            {
+                "error"
+            }
+            Ok(rmcp::model::CallToolResponse::Complete(_)) => "ok",
+            Ok(_) => "pending",
+            Err(_) => "rejected",
+        };
+        tracing::info!(
+            tool = tool.as_str(),
+            outcome,
+            elapsed_ms = started.elapsed().as_millis(),
+            "tool call finished"
+        );
+        response
+    }
+
+    /// Names the client that connected, which tells hosts apart in a log.
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<rmcp::RoleServer>) {
+        let client = context.peer.peer_info();
+        let (name, version) = client.as_ref().map_or(("unknown", "unknown"), |info| {
+            (
+                info.client_info.name.as_str(),
+                info.client_info.version.as_str(),
+            )
+        });
+        tracing::info!(
+            client = name,
+            client_version = version,
+            "client initialized"
+        );
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("mostro-mcp", env!("CARGO_PKG_VERSION")))

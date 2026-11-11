@@ -60,6 +60,14 @@ fn answer_with(dir: &tempfile::TempDir, name: &str) {
 }
 
 async fn connect(cli: &Path, allow_writes: bool) -> RunningService<RoleClient, ()> {
+    connect_with(cli, allow_writes, &[]).await
+}
+
+async fn connect_with(
+    cli: &Path,
+    allow_writes: bool,
+    extra_env: &[(&str, &str)],
+) -> RunningService<RoleClient, ()> {
     let transport = TokioChildProcess::new(
         tokio::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp")).configure(|cmd| {
             cmd.env_clear()
@@ -69,7 +77,8 @@ async fn connect(cli: &Path, allow_writes: bool) -> RunningService<RoleClient, (
                 .env("MOSTRO_MCP_ALLOW_WRITES", allow_writes.to_string())
                 // Must never reach the CLI, whatever the parent exports.
                 .env("ADMIN_NSEC", "nsec1shouldneverbeforwarded")
-                .env("SOME_OTHER_SECRET", "hunter2");
+                .env("SOME_OTHER_SECRET", "hunter2")
+                .envs(extra_env.iter().copied());
         }),
     )
     .expect("spawn mostro-mcp");
@@ -588,4 +597,162 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
         );
         client.cancel().await.unwrap();
     }
+}
+
+/// The server with piped stdio, and a thread collecting its stderr.
+fn spawn_raw(
+    cli: &Path,
+    extra_env: &[(&str, &str)],
+) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .envs(extra_env.iter().copied())
+        .env("MOSTRO_CLI_PATH", cli)
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (lines, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    (child, rx)
+}
+
+/// Waits for a stderr line containing `needle`; returns every line read.
+fn stderr_until(rx: &std::sync::mpsc::Receiver<String>, needle: &str) -> String {
+    let mut seen = String::new();
+    while let Ok(line) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        seen.push_str(&line);
+        seen.push('\n');
+        if line.contains(needle) {
+            return seen;
+        }
+    }
+    panic!("no stderr line with `{needle}`:\n{seen}");
+}
+
+#[tokio::test]
+async fn a_termination_signal_is_logged_before_the_server_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir), &[]);
+    stderr_until(&stderr, "offers the JSON commands");
+
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+
+    let log = stderr_until(&stderr, "SIGTERM");
+    assert!(log.contains("stopped by a signal"), "{log}");
+    assert_eq!(child.wait().unwrap().code(), Some(128 + 15));
+}
+
+#[tokio::test]
+async fn a_client_that_closes_the_connection_is_logged() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir), &[]);
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"t","version":"0"}}}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .unwrap();
+    stderr_until(&stderr, "MCP session started");
+
+    drop(stdin);
+
+    let log = stderr_until(&stderr, "MCP session ended");
+    assert!(log.contains("Closed"), "{log}");
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}
+
+#[tokio::test]
+async fn the_log_file_shows_who_launched_the_server_and_every_tool_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("mcp.log");
+    let client = connect_with(
+        &fake_cli(&dir),
+        false,
+        &[("MOSTRO_MCP_LOG_FILE", log.to_str().unwrap())],
+    )
+    .await;
+    call(&client, "list_orders", json!({})).await;
+    call(&client, "get_order", json!({"order_id": "nope"})).await;
+    client.cancel().await.unwrap();
+
+    let mut text = String::new();
+    for _ in 0..50 {
+        text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.contains("MCP session ended") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    for needle in [
+        "starting mostro-mcp",
+        "ppid=",
+        "client initialized",
+        "client=\"rmcp\"",
+        "tool call tool=\"list_orders\"",
+        "tool call finished tool=\"list_orders\" outcome=\"ok\"",
+        "tool call finished tool=\"get_order\" outcome=\"error\"",
+        "elapsed_ms=",
+        "MCP session ended",
+    ] {
+        assert!(text.contains(needle), "{needle} missing from:\n{text}");
+    }
+}
+
+#[tokio::test]
+async fn a_heartbeat_marks_that_the_server_is_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, stderr) = spawn_raw(&fake_cli(&dir), &[("MOSTRO_MCP_HEARTBEAT_SECS", "1")]);
+    let log = stderr_until(&stderr, "alive");
+    assert!(log.contains("uptime_secs="), "{log}");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[tokio::test]
+async fn a_server_that_cannot_start_says_why_in_the_log_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("mcp.log");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", dir.path().join("no-such-cli"))
+        .env("MOSTRO_PUBKEY", NODE)
+        .env("RELAYS", "ws://localhost:7000")
+        .env("MOSTRO_MCP_LOG_FILE", &log)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("mostro-mcp stopped"), "{text}");
+    assert!(text.contains("could not run `mostro-cli schema`"), "{text}");
+    assert!(
+        text.contains("MOSTRO_CLI_PATH"),
+        "the cause, not just the context: {text}"
+    );
 }
