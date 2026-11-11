@@ -47,7 +47,8 @@ feature moves the server to the new contract, then lets an agent finish a whole 
 ## Scope
 
 Tools, backend, contract check, output mapping, tests, README. Out of scope: paying invoices, creating identities, disputes, `rate` and the admin
-commands (not migrated in the CLI), a multi-user or per-call identity, changing the CLI.
+commands (not migrated in the CLI), a multi-user or per-call identity, changing the CLI. Later, outside this spec: `open_dispute`
+over `dispute open` (issue #14; the dispute chat and list stay out while the CLI prints them only for humans).
 
 ## Requirements
 
