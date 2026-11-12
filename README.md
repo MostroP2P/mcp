@@ -24,6 +24,90 @@ MCP client / agent ──MCP (stdio)──▶ mostro-mcp ──subprocess──�
   `identity_missing`.
 - For the regtest network: Docker with Compose v2, `jq`.
 
+## Installation
+
+Either way, `mostro-mcp` needs [`mostro-cli`](https://github.com/MostroP2P/mostro-cli)
+**0.17.1 or later** installed separately and an identity created with
+`mostro-cli identity init` (see [Requirements](#requirements)).
+
+### Option A: a release binary
+
+Download the package for your system from
+[the releases page](https://github.com/MostroP2P/mcp/releases), together with
+its `.sha256` file:
+
+| System | Architecture | Package |
+|---|---|---|
+| Linux | x86_64 | `mostro-mcp-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux | ARM64 (aarch64) | `mostro-mcp-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS | Intel | `mostro-mcp-<version>-x86_64-apple-darwin.tar.gz` |
+| macOS | Apple Silicon | `mostro-mcp-<version>-aarch64-apple-darwin.tar.gz` |
+| Windows | x86_64 | `mostro-mcp-<version>-x86_64-pc-windows-msvc.zip` |
+
+Each package holds the `mostro-mcp` binary (`mostro-mcp.exe` on Windows) and
+this README.
+
+Linux and macOS (set `TARGET` from the table):
+
+```bash
+VERSION=0.1.0
+TARGET=x86_64-unknown-linux-gnu
+PKG=mostro-mcp-$VERSION-$TARGET.tar.gz
+BASE=https://github.com/MostroP2P/mcp/releases/download/v$VERSION
+curl -LO "$BASE/$PKG" -LO "$BASE/$PKG.sha256"
+sha256sum -c "$PKG.sha256"          # macOS: shasum -a 256 -c "$PKG.sha256"
+tar -xzf "$PKG"
+install -m 755 "mostro-mcp-$VERSION-$TARGET/mostro-mcp" ~/.local/bin/   # any directory in PATH
+```
+
+The macOS binaries are not signed. If macOS refuses to run it, remove the
+quarantine flag once:
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/mostro-mcp
+```
+
+Windows (PowerShell):
+
+```powershell
+$Version = "0.1.0"
+$Pkg = "mostro-mcp-$Version-x86_64-pc-windows-msvc.zip"
+$Base = "https://github.com/MostroP2P/mcp/releases/download/v$Version"
+Invoke-WebRequest "$Base/$Pkg" -OutFile $Pkg
+Invoke-WebRequest "$Base/$Pkg.sha256" -OutFile "$Pkg.sha256"
+$Expected = (Get-Content "$Pkg.sha256").Split(" ")[0]
+if ((Get-FileHash -Algorithm SHA256 $Pkg).Hash -ne $Expected) { throw "checksum mismatch" }
+Expand-Archive $Pkg -DestinationPath .
+# Move mostro-mcp.exe to a folder in your PATH, for example:
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\mostro-mcp" | Out-Null
+Move-Item "mostro-mcp-$Version-x86_64-pc-windows-msvc\mostro-mcp.exe" "$env:LOCALAPPDATA\Programs\mostro-mcp\" -Force
+```
+
+### Option B: build from source
+
+With Rust 1.88 or later:
+
+```bash
+git clone https://github.com/MostroP2P/mcp.git
+cd mcp
+cargo build --release          # binary at target/release/mostro-mcp
+```
+
+### Publishing a new version
+
+The version in `Cargo.toml` is the source of truth and the tag must match it:
+bump `version` in `Cargo.toml` (and `Cargo.lock`, e.g. with `cargo build`),
+commit, then tag and push:
+
+```bash
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
+```
+
+The `Release` workflow checks that the tag matches `Cargo.toml`, runs the tests
+and clippy, builds the five packages above with their `.sha256` files and
+publishes them in the GitHub release with generated notes.
+
 ## Build and test
 
 ```bash

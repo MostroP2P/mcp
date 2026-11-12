@@ -12,7 +12,6 @@ use mostro_mcp::{
     server::MostroServer,
 };
 use rmcp::{ServiceExt, transport::stdio};
-use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -50,7 +49,7 @@ async fn serve() -> anyhow::Result<()> {
         writes = config.allow_writes,
         version = env!("CARGO_PKG_VERSION"),
         pid = std::process::id(),
-        ppid = std::os::unix::process::parent_id(),
+        ppid = parent_pid(),
         "starting mostro-mcp"
     );
 
@@ -68,8 +67,21 @@ async fn serve() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The parent's process id, which only Unix exposes without extra crates.
+#[cfg(unix)]
+fn parent_pid() -> Option<u32> {
+    Some(std::os::unix::process::parent_id())
+}
+
+#[cfg(not(unix))]
+fn parent_pid() -> Option<u32> {
+    None
+}
+
 /// Resolves to the name and number of the first termination signal received.
+#[cfg(unix)]
 fn stop_signal() -> anyhow::Result<impl Future<Output = (&'static str, i32)>> {
+    use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate()).context("listen for SIGTERM")?;
     let mut int = signal(SignalKind::interrupt()).context("listen for SIGINT")?;
     let mut hup = signal(SignalKind::hangup()).context("listen for SIGHUP")?;
@@ -78,6 +90,20 @@ fn stop_signal() -> anyhow::Result<impl Future<Output = (&'static str, i32)>> {
             _ = term.recv() => ("SIGTERM", 15),
             _ = int.recv() => ("SIGINT", 2),
             _ = hup.recv() => ("SIGHUP", 1),
+        }
+    })
+}
+
+/// Windows has no Unix signals: Ctrl+C (or Ctrl+Break) is reported as SIGINT.
+#[cfg(windows)]
+fn stop_signal() -> anyhow::Result<impl Future<Output = (&'static str, i32)>> {
+    use tokio::signal::windows::{ctrl_break, ctrl_c};
+    let mut int = ctrl_c().context("listen for Ctrl+C")?;
+    let mut brk = ctrl_break().context("listen for Ctrl+Break")?;
+    Ok(async move {
+        tokio::select! {
+            _ = int.recv() => ("SIGINT", 2),
+            _ = brk.recv() => ("SIGINT", 2),
         }
     })
 }
