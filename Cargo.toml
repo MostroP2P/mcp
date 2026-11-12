@@ -5,6 +5,8 @@ edition = "2024"
 rust-version = "1.88"
 description = "MCP server exposing Mostro P2P operations to AI agents, backed by mostro-cli"
 license = "MIT"
+repository = "https://github.com/MostroP2P/mcp"
+readme = "README.md"
 publish = false
 
 [dependencies]
