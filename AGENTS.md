@@ -182,8 +182,15 @@ match it. Do not bump the version in a feature pull request.
 
 1. A pull request bumps `version` in `Cargo.toml` (and `Cargo.lock`) and is
    merged like any other change.
-2. A maintainer tags the merge commit on `main` and pushes the tag:
-   `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`.
+2. A maintainer tags that merge commit by its SHA, not whatever `main` or the
+   current branch points to, and pushes the tag:
+
+   ```sh
+   git fetch origin
+   git merge-base --is-ancestor <merge-commit-sha> origin/main  # must succeed
+   git tag -a vX.Y.Z <merge-commit-sha> -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
 3. The **Release** workflow checks that the tag matches `Cargo.toml`, runs the
    tests and clippy, builds the five platform packages with their `.sha256`
    files and publishes the GitHub release with generated notes.
