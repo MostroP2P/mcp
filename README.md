@@ -113,6 +113,7 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 | `read_chat` | yes | `order chat` | `order_id`, `since_minutes?` (1 to 10080, the default) |
 | `send_chat` | no | `order chat --message` | `order_id`, `message` (1 to 4096 bytes; line breaks kept) |
 | `open_dispute` | no | `dispute open` | `order_id` (an `active` or `fiat-sent` order you hold) |
+| `rate_counterparty` | no | `order rate` | `order_id` (a finished order you hold), `rating` (1 to 5, the user's choice; anything else is refused before the CLI runs) |
 
 `watch_order` follows one trade without polling: each call returns at the
 first new node message or chat message, or empty after `wait_seconds`, with a
@@ -136,6 +137,26 @@ brings in a solver and cannot be withdrawn. The node refuses any order that is
 not `active` or `fiat-sent` (`not_allowed_by_status`) and answers a second
 dispute on the same order with silence, so the tool reports `uncertain`;
 `get_order` then shows the status `dispute`.
+
+`rate_counterparty` ends a trade: it sends the rating the user chose for the
+counterparty, 1 to 5. The server's instructions tell agents to ask the user for
+the score and never to choose one, nor to rate only because a trade reached
+`success`. Each side rates an order once and cannot change it. The node accepts
+the buyer's rating once the order is `success`, and the seller's from
+`settled-hold-invoice` (after the release, or a solver's settlement) or
+`success`; anything else is refused with `invalid_order_status`. The CLI
+waits for the node's `rate-received` and checks that it carries the rating
+sent. A repeated rating gets no answer, so the tool reports `uncertain`
+(`reply_timeout`), as it does whenever the reply does not come: the rating may
+be recorded, so it is never resent. `get_order` does not show ratings; a
+`rate-received` message for the order in `list_messages` confirms one, but its
+absence proves nothing. `list_messages` marks the node's request to rate with
+action `rate` (`next_step` `rate`). Like every request it sends, mostro-cli
+0.17.1 mines the proof of work the node advertises (for a rating, the
+first-contact difficulty) on top of `POW`, up to 20 bits; a node asking for
+more fails with `pow_required` and nothing is sent until `POW` is raised to
+that. See the book's [order rate](https://mostro.network/mostro-cli-book/commands/order_rate.html)
+page and its [guide for AI agents](https://mostro.network/mostro-cli-book/wrapper/ai_agents.html).
 
 Every state-changing tool passes `--yes`: the confirmation is the MCP host's
 approval prompt plus `MOSTRO_MCP_ALLOW_WRITES`. **No tool pays an invoice.**
@@ -246,6 +267,9 @@ bob read_chat '{"order_id":"<id>"}'
 bob fiat_sent '{"order_id":"<id>"}'
 alice release '{"order_id":"<id>","fiat_received":true}'
 alice get_order '{"order_id":"<id>"}'       # status success
+# Each rates the other once, with the score the user chose
+alice rate_counterparty '{"order_id":"<id>","rating":5}'
+bob rate_counterparty '{"order_id":"<id>","rating":5}'
 ```
 
 Taking without `invoice` works too: `list_messages` then shows Bob the node's
@@ -260,7 +284,9 @@ loses the bond while the seller claims her share with `add_bond_invoice`. On
 2026-11-10, with mostrod v0.20.2 and mostro-cli v0.17.1, all passed in both
 modes: the trades in `success` with Bob's 15 000 sats settled, the taker's bond
 paid on every take with bonds on, and Alice's 500-sat share of a slashed
-1 000-sat bond settled.
+1 000-sat bond settled. A rating test came later and has not run on regtest
+yet: a running trade refused (`invalid_order_status`), then both sides rating
+the finished trade, and a second rating `uncertain`.
 
 ## Diagnosing a server that disappeared
 
@@ -297,6 +323,6 @@ The log then answers four questions:
   the dispute chat (`disputechat`) and the list of disputes (`listdisputes`)
   only for humans, so this server cannot read or answer the solver. Answer the
   solver with mostro-cli.
-- **Ratings are CLI-only.** mostro-cli offers `order rate` in JSON; it is not a
-  tool yet.
+- **A rating cannot be read back.** No command shows whether a side rated an
+  order: only a `rate-received` message in `list_messages` confirms it.
 - **One identity per server process**, the one in `MCLI_DIR`.

@@ -135,7 +135,7 @@ async fn list_orders_reaches_the_regtest_node() {
         .unwrap();
     let client = connect("alice", false).await;
 
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 17);
     let document = ok(&client, "list_orders", json!({})).await;
     assert_eq!(document["command"], "order.list");
     assert_eq!(document["data"]["node_pubkey"], node);
@@ -542,6 +542,82 @@ async fn the_buyer_disputes_an_active_trade_and_a_pending_order_is_refused() {
     assert!(error, "{again}");
     assert_eq!(again["status"], "uncertain", "{again}");
     assert_eq!(again["error"]["code"], "reply_timeout", "{again}");
+
+    alice.cancel().await.unwrap();
+    bob.cancel().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network (regtest/devenv.sh up)"]
+async fn both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused() {
+    let ActiveTrade { alice, bob, id, .. } = until_active(Maker::Seller, true).await;
+
+    // A running trade cannot be rated: the node refuses it, nothing recorded.
+    let (refused, error) = call(
+        &bob,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 5}),
+    )
+    .await;
+    assert!(error, "{refused}");
+    assert_eq!(refused["error"]["code"], "node_refused", "{refused}");
+    assert_eq!(
+        refused["error"]["reason"], "invalid_order_status",
+        "{refused}"
+    );
+
+    // The trade finishes.
+    ok(&bob, "fiat_sent", json!({"order_id": id})).await;
+    poll("the fiat-sent status", || async {
+        (status(&alice, &id).await.as_deref() == Some("fiat-sent")).then_some(())
+    })
+    .await;
+    ok(
+        &alice,
+        "release",
+        json!({"order_id": id, "fiat_received": true}),
+    )
+    .await;
+    poll("the trade to succeed", || async {
+        (status(&bob, &id).await.as_deref() == Some("success")).then_some(())
+    })
+    .await;
+
+    // Alice, the seller, and Bob, the buyer, each rate once; the node echoes
+    // the rating each sent.
+    for (client, rating) in [(&alice, 5), (&bob, 4)] {
+        let rated = ok(
+            client,
+            "rate_counterparty",
+            json!({"order_id": id, "rating": rating}),
+        )
+        .await;
+        assert_eq!(rated["command"], "order.rate", "{rated}");
+        assert_eq!(rated["data"]["order_id"], id.as_str(), "{rated}");
+        assert_eq!(rated["data"]["rating"], rating, "{rated}");
+    }
+
+    // A second rating from the same side gets no answer: uncertain, never ok.
+    let (again, error) = call(
+        &alice,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 1}),
+    )
+    .await;
+    assert!(error, "{again}");
+    assert_eq!(again["status"], "uncertain", "{again}");
+    assert_eq!(again["error"]["code"], "reply_timeout", "{again}");
+
+    // The node's acknowledgement is also among Alice's messages.
+    poll("the rate-received message", || async {
+        let (document, _) = call(&alice, "list_messages", json!({"order_id": id})).await;
+        document["data"]["messages"]
+            .as_array()?
+            .iter()
+            .any(|m| m["action"] == "rate-received")
+            .then_some(())
+    })
+    .await;
 
     alice.cancel().await.unwrap();
     bob.cancel().await.unwrap();

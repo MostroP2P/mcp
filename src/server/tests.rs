@@ -10,6 +10,7 @@ use crate::tools::{
     add_invoice::AddInvoiceParams,
     chat::{ReadChatParams, SendChatParams},
     list_messages::ListMessagesParams,
+    rate_counterparty::RateCounterpartyParams,
     sync_orders::SyncOrdersParams,
     trade_step::{OrderStepParams, ReleaseParams},
     watch_order::WatchOrderParams,
@@ -90,7 +91,7 @@ fn sell_order() -> CreateOrderParams {
 }
 
 #[test]
-fn sixteen_tools_with_honest_read_only_hints() {
+fn seventeen_tools_with_honest_read_only_hints() {
     let (server, _) = server(false);
     let mut tools: Vec<_> = server
         .tool_router
@@ -115,6 +116,7 @@ fn sixteen_tools_with_honest_read_only_hints() {
             ("list_my_orders".to_string(), Some(true)),
             ("list_orders".to_string(), Some(true)),
             ("open_dispute".to_string(), Some(false)),
+            ("rate_counterparty".to_string(), Some(false)),
             ("read_chat".to_string(), Some(true)),
             ("release".to_string(), Some(false)),
             ("send_chat".to_string(), Some(false)),
@@ -147,6 +149,13 @@ fn watch() -> WatchOrderParams {
     }
 }
 
+fn rating(rating: u8) -> RateCounterpartyParams {
+    RateCounterpartyParams {
+        order_id: ID.into(),
+        rating,
+    }
+}
+
 fn invoice() -> AddInvoiceParams {
     AddInvoiceParams {
         order_id: ID.into(),
@@ -172,6 +181,7 @@ async fn every_trade_step_is_refused_by_default_without_spawning_the_cli() {
             .await,
         server.send_chat(Parameters(chat_message())).await,
         server.open_dispute(Parameters(step())).await,
+        server.rate_counterparty(Parameters(rating(5))).await,
     ] {
         assert_eq!(result.is_error, Some(true));
         assert!(text_of(&result).contains("MOSTRO_MCP_ALLOW_WRITES=true"));
@@ -214,6 +224,7 @@ async fn the_new_tools_run_their_commands() {
         .sync_orders(Parameters(SyncOrdersParams::default()))
         .await;
     server.open_dispute(Parameters(step())).await;
+    server.rate_counterparty(Parameters(rating(5))).await;
     let commands: Vec<String> = cli
         .calls
         .lock()
@@ -232,7 +243,8 @@ async fn the_new_tools_run_their_commands() {
             "order release",
             "order cancel",
             "order sync",
-            "dispute open"
+            "dispute open",
+            "order rate"
         ]
     );
 }
@@ -625,5 +637,172 @@ fn the_instructions_leave_a_dispute_to_the_user() {
         "the fiat was sent and the seller does not release",
     ] {
         assert!(INSTRUCTIONS.contains(needle), "{needle}");
+    }
+}
+
+#[test]
+fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
+    let (server, _) = server(false);
+    let tool = server
+        .tool_router
+        .list_all()
+        .into_iter()
+        .find(|t| t.name == "rate_counterparty")
+        .unwrap();
+    let hints = tool.annotations.unwrap();
+    assert_eq!(hints.title.as_deref(), Some("Rate counterparty"));
+    assert_eq!(hints.read_only_hint, Some(false));
+    assert_eq!(hints.destructive_hint, Some(false));
+    assert_eq!(hints.idempotent_hint, Some(false));
+    assert_eq!(hints.open_world_hint, Some(true));
+    let description = tool.description.unwrap_or_default();
+    for needle in [
+        "the user chose",
+        "never pick",
+        "STATE-CHANGING",
+        "cannot be changed",
+        "once per order",
+        "settled-hold-invoice",
+        "success",
+        "MOSTRO_MCP_ALLOW_WRITES=true",
+        "never resend",
+        "rate-received",
+        "get_order",
+    ] {
+        assert!(description.contains(needle), "{needle}: {description}");
+    }
+}
+
+#[tokio::test]
+async fn an_enabled_server_rates_with_the_exact_arguments() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("rate_received")));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let rated = server
+        .rate_counterparty(Parameters(RateCounterpartyParams {
+            order_id: ID.to_uppercase(),
+            rating: 5,
+        }))
+        .await;
+    assert_ne!(rated.is_error, Some(true), "{}", text_of(&rated));
+    assert_eq!(
+        *cli.calls.lock().unwrap(),
+        [[
+            "order",
+            "rate",
+            &format!("--order={ID}"),
+            "--rating=5",
+            "--yes"
+        ]]
+    );
+    // The CLI's document passes through unchanged.
+    let all: serde_json::Value = serde_json::from_str(OUTCOMES).unwrap();
+    assert_eq!(
+        rated.structured_content.clone().unwrap(),
+        all["rate_received"]["stdout"]
+    );
+}
+
+#[tokio::test]
+async fn a_rating_out_of_range_never_spawns_the_cli() {
+    let (server, cli) = server(true);
+    for out_of_range in [0, 6] {
+        let result = server
+            .rate_counterparty(Parameters(rating(out_of_range)))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            text_of(&result).contains("must be 1 to 5"),
+            "{}",
+            text_of(&result)
+        );
+    }
+    let bad_id = server
+        .rate_counterparty(Parameters(RateCounterpartyParams {
+            order_id: "not-a-uuid".into(),
+            rating: 5,
+        }))
+        .await;
+    assert_eq!(bad_id.is_error, Some(true));
+    assert!(cli.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_rating_keeps_the_nodes_reason_without_the_warning() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("rate_node_refused")));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let refused = server.rate_counterparty(Parameters(rating(5))).await;
+    assert_eq!(refused.is_error, Some(true));
+    let body = text_of(&refused);
+    assert!(
+        body.contains("node_refused") && body.contains("invalid_order_status"),
+        "{body}"
+    );
+    assert!(
+        !body.starts_with(crate::outcome::UNCERTAIN_WARNING),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn an_uncertain_or_timed_out_rating_is_warned_and_a_timed_out_read_is_not() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("rate_uncertain")));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let uncertain = server.rate_counterparty(Parameters(rating(5))).await;
+    assert_eq!(uncertain.is_error, Some(true));
+    let body = text_of(&uncertain);
+    assert!(
+        body.starts_with(crate::outcome::UNCERTAIN_WARNING),
+        "{body}"
+    );
+    assert!(body.contains("reply_timeout"), "{body}");
+
+    let cli = Arc::new(FakeCli::answering(|| {
+        Err(Error::Timeout(std::time::Duration::from_secs(60)))
+    }));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let timed_out = server.rate_counterparty(Parameters(rating(5))).await;
+    assert!(text_of(&timed_out).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    let read = server
+        .get_order(Parameters(GetOrderParams {
+            order_id: ID.into(),
+        }))
+        .await;
+    assert_eq!(read.is_error, Some(true));
+    assert!(!text_of(&read).starts_with(crate::outcome::UNCERTAIN_WARNING));
+}
+
+#[test]
+fn the_instructions_end_a_trade_with_the_users_own_rating() {
+    for needle in [
+        "rate_counterparty",
+        "the rating the user chose",
+        "never choose one yourself",
+    ] {
+        assert!(INSTRUCTIONS.contains(needle), "{needle}");
+    }
+}
+
+#[test]
+fn list_messages_names_the_next_steps_and_the_rating_request() {
+    let (server, _) = server(false);
+    let description = server
+        .tool_router
+        .list_all()
+        .into_iter()
+        .find(|t| t.name == "list_messages")
+        .and_then(|t| t.description)
+        .unwrap_or_default();
+    for needle in [
+        "pay_hold_invoice",
+        "pay_bond_invoice",
+        "add_invoice",
+        "add_bond_invoice",
+        "fiat_sent",
+        "release",
+        "`rate`",
+        "null",
+        "rate_counterparty",
+    ] {
+        assert!(description.contains(needle), "{needle}: {description}");
     }
 }

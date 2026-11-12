@@ -108,7 +108,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-async fn a_client_discovers_sixteen_typed_tools() {
+async fn a_client_discovers_seventeen_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -132,6 +132,7 @@ async fn a_client_discovers_sixteen_typed_tools() {
         "watch_order",
         "read_chat",
         "open_dispute",
+        "rate_counterparty",
     ] {
         assert!(
             instructions.contains(reference),
@@ -155,6 +156,7 @@ async fn a_client_discovers_sixteen_typed_tools() {
             "list_my_orders",
             "list_orders",
             "open_dispute",
+            "rate_counterparty",
             "read_chat",
             "release",
             "send_chat",
@@ -179,6 +181,13 @@ async fn a_client_discovers_sixteen_typed_tools() {
     let dispute = tools.iter().find(|t| t.name == "open_dispute").unwrap();
     let schema = serde_json::to_value(&dispute.input_schema).unwrap();
     assert_eq!(schema["required"], json!(["order_id"]));
+    let rate = tools
+        .iter()
+        .find(|t| t.name == "rate_counterparty")
+        .unwrap();
+    let schema = serde_json::to_value(&rate.input_schema).unwrap();
+    assert_eq!(schema["required"], json!(["order_id", "rating"]));
+    assert_eq!(schema["properties"]["rating"]["type"], "integer");
 
     client.cancel().await.unwrap();
 }
@@ -336,7 +345,7 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
         "{}",
         text(&result)
     );
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 17);
     client.cancel().await.unwrap();
 }
 
@@ -415,7 +424,7 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("is not an order id"));
 
     // The server is still serving afterwards.
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 17);
     client.cancel().await.unwrap();
 }
 
@@ -530,6 +539,17 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
                 "--yes",
             ],
         ),
+        (
+            "rate_counterparty",
+            json!({"order_id": id, "rating": 5}),
+            vec![
+                "order",
+                "rate",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--rating=5",
+                "--yes",
+            ],
+        ),
     ] {
         let result = call(&client, tool, args).await;
         assert_ne!(result.is_error, Some(true), "{tool}: {}", text(&result));
@@ -551,6 +571,20 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
         "{}",
         text(&refused)
     );
+    for bad in [json!(0), json!(6), json!(-1), json!(4.5), json!("5")] {
+        let refused = call(
+            &client,
+            "rate_counterparty",
+            json!({"order_id": id, "rating": bad}),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true), "{bad}: {}", text(&refused));
+        assert!(
+            refused.structured_content.is_none(),
+            "{bad}: refused before the CLI ran: {}",
+            text(&refused)
+        );
+    }
     client.cancel().await.unwrap();
 }
 
@@ -622,6 +656,12 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
             "open_dispute",
             json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
             "UNCERTAIN",
+        ),
+        (
+            "rate_received",
+            "rate_counterparty",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5}),
+            "\"rating\":5",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -794,4 +834,41 @@ async fn a_server_that_cannot_start_says_why_in_the_log_file() {
         text.contains("MOSTRO_CLI_PATH"),
         "the cause, not just the context: {text}"
     );
+}
+
+#[tokio::test]
+async fn a_refused_or_uncertain_rating_reaches_the_agent_as_the_cli_said() {
+    let rate = json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5});
+
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    answer_with(&dir, "rate_node_refused");
+    let client = connect(&cli, true).await;
+    let refused = call(&client, "rate_counterparty", rate.clone()).await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        !text(&refused).starts_with("UNCERTAIN"),
+        "{}",
+        text(&refused)
+    );
+    let error = &refused.structured_content.clone().unwrap()["error"];
+    assert_eq!(error["code"], "node_refused");
+    assert_eq!(error["reason"], "invalid_order_status");
+    client.cancel().await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    answer_with(&dir, "rate_uncertain");
+    let client = connect(&cli, true).await;
+    let uncertain = call(&client, "rate_counterparty", rate).await;
+    assert_eq!(uncertain.is_error, Some(true));
+    assert!(
+        text(&uncertain).starts_with("UNCERTAIN"),
+        "{}",
+        text(&uncertain)
+    );
+    let document = uncertain.structured_content.clone().unwrap();
+    assert_eq!(document["status"], "uncertain");
+    assert_eq!(document["error"]["code"], "reply_timeout");
+    client.cancel().await.unwrap();
 }

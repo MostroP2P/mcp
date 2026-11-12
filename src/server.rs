@@ -22,6 +22,7 @@ use crate::tools::{
     list_messages::{self, ListMessagesParams},
     list_my_orders,
     list_orders::{self, ListOrdersParams},
+    rate_counterparty::{self, RateCounterpartyParams},
     sync_orders::{self, SyncOrdersParams},
     take_order::{self, TakeOrderParams},
     trade_step::{self, OrderStepParams, ReleaseParams},
@@ -61,8 +62,11 @@ them unless it was started with MOSTRO_MCP_ALLOW_WRITES=true. A trade runs: \
 create_order or take_order; then, as list_messages asks, add_invoice (the \
 buyer's invoice for the sats) or a payment by the user; fiat_sent (the buyer, \
 once the fiat went out); release (the seller, only once the user confirms the \
-fiat arrived; irreversible). cancel withdraws an order or a trade; \
-add_bond_invoice claims a share of a slashed bond; sync_orders adopts orders \
+fiat arrived; irreversible). When the trade is over (a `rate` message), \
+rate_counterparty sends the rating the user chose for the counterparty, 1 to 5: \
+ask the user for it and never choose one yourself; a trade reaching `success` is \
+no reason to rate. Each side rates an order once, for good. cancel withdraws an \
+order or a trade; add_bond_invoice claims a share of a slashed bond; sync_orders adopts orders \
 the node created for this identity (the next order of a range); send_chat \
 sends one message to the counterparty (show the user the text first).
 
@@ -196,12 +200,18 @@ impl<R: CliRunner> MostroServer<R> {
 
     #[tool(
         description = "Read what the node said about this identity's trades, oldest \
-            first: each message's action and `next_step` (pay an invoice, add an \
-            invoice, send the fiat, wait), with any invoice to pay as data. A payment \
+            first: each message's action and `next_step`, with any invoice to pay as \
+            data. `next_step` is `pay_hold_invoice` or `pay_bond_invoice` (the user pays \
+            the invoice in the payload), `add_invoice`, `add_bond_invoice`, `fiat_sent`, \
+            `release` (only once the user confirms the fiat arrived) or `rate`, and null \
+            when the message asks nothing (treat any other value as null). It is what \
+            the message asked when sent: check get_order before acting. A payment \
             step can come as two messages with the same `next_step`: the counterparty \
-            (payload kind `peer`) and the invoice (payload kind `payment_request`). \
-            Filter by order_id; since_minutes reads further back (default 30, at most \
-            10080). Call it after every state-changing tool to learn the next step.",
+            (payload kind `peer`) and the invoice (payload kind `payment_request`). A \
+            message with action `rate` means the trade is over: ask the user for their \
+            rating and call rate_counterparty with it. Filter by order_id; \
+            since_minutes reads further back (default 30, at most 10080). Call it \
+            after every state-changing tool to learn the next step.",
         annotations(title = "List messages", read_only_hint = true, open_world_hint = true)
     )]
     async fn list_messages(
@@ -380,6 +390,35 @@ impl<R: CliRunner> MostroServer<R> {
         Parameters(params): Parameters<OrderStepParams>,
     ) -> CallToolResult {
         self.execute_write(|| dispute::open_args(&params)).await
+    }
+
+    #[tool(
+        description = "Rate the counterparty of a finished trade you hold, 1 (worst) to \
+            5 (best). The rating must be the one the user chose in this conversation: \
+            ask for it, never pick or suggest one yourself, and never rate only because \
+            the trade reached `success`. STATE-CHANGING and one-time: each side rates \
+            once per order and a rating cannot be changed. The buyer may rate once the \
+            order is `success`; the seller once it is `settled-hold-invoice` (after the \
+            release, or a solver's settlement) or `success`. Otherwise the node refuses \
+            with `invalid_order_status`. Refused unless the server runs with \
+            MOSTRO_MCP_ALLOW_WRITES=true. On `uncertain` (`reply_timeout`), never resend: \
+            the rating may be recorded, and the node answers a repeated rating with \
+            silence. get_order does not show ratings; a `rate-received` message for the \
+            order in list_messages confirms one, and its absence proves nothing.",
+        annotations(
+            title = "Rate counterparty",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn rate_counterparty(
+        &self,
+        Parameters(params): Parameters<RateCounterpartyParams>,
+    ) -> CallToolResult {
+        self.execute_write(|| rate_counterparty::args(&params))
+            .await
     }
 
     #[tool(

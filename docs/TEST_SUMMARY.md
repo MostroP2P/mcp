@@ -154,3 +154,27 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 123 + 16 passed (8 regtest ignored), build. Also seen: one run of
   `a_run_given_extra_time_outlasts_the_base_timeout_and_no_more` failed under load and passed three times on its own. It is a timing
   test this change does not touch.
+
+## Follow-up: Rating The Counterparty (Issue #10): 2026-11-12
+
+[Spec 002](../specs/002-rate-counterparty/spec.md). Native Linux, cargo 1.97, on top of `main` `0e01da4`.
+
+- **Tool** (`src/tools/rate_counterparty.rs`, `server.rs`): `rate_counterparty` runs `order rate --order=<uuid> --rating=<1-5> --yes`
+  behind the write gate; a timeout or unreadable output carries the no-retry warning. Annotations: not read-only, not destructive, not
+  idempotent, open world. `contract::WRITE` requires `order.rate`. The descriptions of `rate_counterparty` and `list_messages` and the
+  instructions are updated (the user's own rating; the `next_step` values of mostro-cli 0.17.1, read from its source at the tag).
+- **Fixtures**: the four `order.rate` examples of spec `014-order-rate` at `v0.17.1`. Before they were added, `refresh.py` reproduced
+  the current `outcomes.json` byte for byte (the `schema` input taken from the current fixture).
+- **Tests**: written first and run red: the unit tests on a `todo!()` (4 panicked; the typed-deserialization test passed, as `u8`
+  already refuses those values), the server tests (no `rate_counterparty` method), the stdio tests (6 failed: unknown tool, sixteen
+  tools). Unit: the exact argv, a lowercased id, 1 and 5 accepted, 0, 6 and 255 refused, a bad id, -1 / 256 / 4.5 / "5" refused by
+  the type. Server: refused by default without spawning, runs `order rate`, the annotations and description, the CLI's document passed
+  through unchanged, out-of-range and bad-id refusals that spawn nothing, a refusal keeping `invalid_order_status` without the warning,
+  a warned `uncertain` and timeout while a timed-out read is not warned, the instructions, the `list_messages` description. Contract:
+  `order.rate` required with writes on only. Stdio: discovery of seventeen tools and the `rate_counterparty` schema, the whole-trade
+  argv, bad ratings refused before the CLI runs, and the rated, refused and uncertain documents reaching the agent.
+- **Mutation spot checks**: accepting 0 (`0..=5`) failed two unit tests and the stdio whole-trade test; removing `order.rate` from
+  `WRITE` failed the contract test; running the tool as a local write failed the warned-timeout test. All restored, tests green.
+- **Regtest**: `both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused` is written and **not run** (no Docker daemon in
+  this environment). The real CLI was not run either.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 135 + 17 passed (9 regtest ignored), build, `git diff --check`.
