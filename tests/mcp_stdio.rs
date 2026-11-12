@@ -677,24 +677,6 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
             json!({"order_id": "00000000-0000-0000-0000-000000000001"}),
             "UNCERTAIN",
         ),
-        (
-            "rate_received",
-            "rate_counterparty",
-            json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5}),
-            "\"rating\":5",
-        ),
-        (
-            "rate_node_refused",
-            "rate_counterparty",
-            json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5}),
-            "invalid_order_status",
-        ),
-        (
-            "rate_uncertain",
-            "rate_counterparty",
-            json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5}),
-            "UNCERTAIN",
-        ),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let cli = fake_cli(&dir);
@@ -708,6 +690,59 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
         );
         client.cancel().await.unwrap();
     }
+}
+
+/// Each outcome of a rating reaches the agent as the CLI's own document: the
+/// result's error flag and structured content, not a substring of its text.
+#[tokio::test]
+async fn the_cli_s_rating_outcomes_reach_the_agent_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    let client = connect(&cli, true).await;
+    let order = "00000000-0000-0000-0000-000000000001";
+    // The fake CLI reads its reply on every run: one server serves all three.
+    let outcome = async |fixture: &str| {
+        answer_with(&dir, fixture);
+        call(
+            &client,
+            "rate_counterparty",
+            json!({"order_id": order, "rating": 5}),
+        )
+        .await
+    };
+
+    let rated = outcome("rate_received").await;
+    assert_ne!(rated.is_error, Some(true), "{}", text(&rated));
+    let document = rated.structured_content.clone().expect("a document");
+    assert_eq!(document["status"], "ok");
+    assert_eq!(document["command"], "order.rate");
+    assert_eq!(document["data"]["order_id"], order);
+    assert_eq!(document["data"]["rating"], 5);
+
+    let refused = outcome("rate_node_refused").await;
+    assert_eq!(refused.is_error, Some(true));
+    let document = refused.structured_content.clone().expect("a document");
+    assert_eq!(document["status"], "error");
+    assert_eq!(document["error"]["code"], "node_refused");
+    assert_eq!(document["error"]["reason"], "invalid_order_status");
+    assert!(
+        !text(&refused).starts_with("UNCERTAIN"),
+        "{}",
+        text(&refused)
+    );
+
+    let uncertain = outcome("rate_uncertain").await;
+    assert_eq!(uncertain.is_error, Some(true));
+    let document = uncertain.structured_content.clone().expect("a document");
+    assert_eq!(document["status"], "uncertain");
+    assert_eq!(document["error"]["code"], "reply_timeout");
+    let body = text(&uncertain);
+    assert!(body.starts_with("UNCERTAIN RATING"), "{body}");
+    assert!(
+        body.contains("Never call rate_counterparty again for this order"),
+        "{body}"
+    );
+    client.cancel().await.unwrap();
 }
 
 /// The server with piped stdio, and a thread collecting its stderr.

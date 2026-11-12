@@ -20,6 +20,14 @@ pub const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 pub const UNCERTAIN_WARNING: &str = "UNCERTAIN: the request may have reached the node. \
 Do NOT retry it. Check the current state first (get_order, list_messages), then decide.";
 
+/// The same for a rating, which is one-time and which no tool can read back:
+/// checking the state settles nothing, so the generic advice does not apply.
+pub const RATING_UNCERTAIN_WARNING: &str = "UNCERTAIN RATING: the rating may have \
+reached the node, and whether it was recorded is unknown. Never call rate_counterparty \
+again for this order. get_order does not show ratings, and a missing `rate-received` \
+message does not prove the rating failed. Tell the user only what is known: it was \
+sent and its outcome is unknown.";
+
 /// A short, cleaned excerpt of output that is not an outcome document, for an
 /// error message.
 pub fn excerpt(output: &str) -> String {
@@ -130,13 +138,19 @@ impl Outcome {
     /// The tool result: the document as text and as structured content. A
     /// failure is a tool error; an uncertain outcome says first not to retry.
     pub fn into_tool_result(self) -> CallToolResult {
+        self.into_tool_result_warned(UNCERTAIN_WARNING)
+    }
+
+    /// [`Outcome::into_tool_result`] with `warning` heading an `uncertain`
+    /// result instead of the generic one.
+    pub fn into_tool_result_warned(self, warning: &str) -> CallToolResult {
         let text = self.document.to_string();
         match self.status {
             Status::Ok => CallToolResult::structured(self.document),
             Status::Error => CallToolResult::structured_error(self.document),
             Status::Uncertain => {
                 let mut result = CallToolResult::structured_error(self.document);
-                result.content = vec![ContentBlock::text(format!("{UNCERTAIN_WARNING}\n\n{text}"))];
+                result.content = vec![ContentBlock::text(format!("{warning}\n\n{text}"))];
                 result
             }
         }

@@ -212,3 +212,33 @@ Static review by the maintainer, checked here against mostrod `v0.20.2` and most
   and dropping the `event_id` rule from watch_order each failed a test. All restored.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 137 + 16 passed (9 regtest ignored), build, `git diff --check`. Not run: the
   regtest (no Docker daemon here) and a real mostro-cli binary. No test covers a seller rating after a solver's settlement on a node.
+
+## Follow-up: Second Review Pass On Rating (PR #16): 2026-11-12
+
+On top of `upstream/main` `8f8ad46`, merged with no conflicts (release workflow and install docs). Checked against mostro-cli
+`v0.17.1` and mostrod `v0.20.2` source.
+
+- **Message ids**: chat records carry `message_id` and no `event_id` (CLI `outcome/chat.rs`), yet the instructions said to act on
+  each watch record by `event_id`. Now node messages go by `event_id` and chat messages by `message_id`, in the instructions, the
+  watch_order description, the README and spec 002, and skipping a seen record never skips a newer one. Tests: a watch result and a
+  chat read keep the CLI's document whole (every record, with its own id kind), and the descriptions name both ids.
+- **Rating uncertainty**: the generic warning ("check the current state, then decide") and the generic timeout text ("do not retry
+  before checking get_order") invite a retry that a rating cannot justify. `rate_counterparty` now uses its own warning
+  (`outcome::RATING_UNCERTAIN_WARNING`): never call it again for that order, get_order does not show ratings, a missing
+  `rate-received` proves nothing, report only that the outcome is unknown. It applies to the CLI's `uncertain` outcomes (the
+  document unchanged), a timeout and unreadable output. Every other write keeps the generic warning. `reply_malformed` has no CLI
+  example for `order.rate`, so its test changes the code of the `uncertain` example and is labelled so.
+- **Tests that could pass falsely**: the rating rows of the stdio substring table are replaced by a test of the result's error flag
+  and structured content (status, `order_id`, rating, `node_refused` / `invalid_order_status`, `reply_timeout`, the rating's
+  warning), on one server. The timed-out-rating test now also checks that no document came and that the text is the rating's
+  timeout, not a parse failure.
+- **Regtest, written and not run** (no Docker daemon here): an untaken order is `uncertain` / `reply_timeout` and a taken one in
+  another status `node_refused`; Bob rates after his watch has ended; a seller rates after a solver settles the dispute
+  (`admtakedispute`, `admsettle` with the node's public test key from `regtest/mostrod/settings.toml` as `ADMIN_NSEC`), with
+  `settled-hold-invoice` or `success`, `admin-settled` and no `rate` asserted. Not reproducible here: a full-privacy counterparty
+  (no switch for it in the commands this server wraps) and a missed PoW probe (timing).
+- **Mutation checks**: routing the rating through the generic write path failed four unit tests and the stdio rating test; ignoring
+  the warning argument failed two; the generic timeout text for a rating failed one; dropping the `message_id` rule from
+  watch_order failed one. All restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 143 + 17 passed (10 regtest ignored), build, `git diff --check`. Not run: the
+  regtest and a real mostro-cli binary.

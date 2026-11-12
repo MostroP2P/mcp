@@ -666,7 +666,7 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
         "success",
         "a `rate` message is not needed",
         "MOSTRO_MCP_ALLOW_WRITES=true",
-        "Never resend on your own",
+        "never call rate_counterparty again for this order",
         "cannot be known",
         "never taken",
         "full privacy",
@@ -754,32 +754,171 @@ async fn a_refused_rating_keeps_the_nodes_reason_without_the_warning() {
     );
 }
 
+/// The rating's own warning: never rate again, and nothing proves failure.
+fn assert_rating_warning(body: &str) {
+    use crate::outcome::{RATING_UNCERTAIN_WARNING, UNCERTAIN_WARNING};
+    assert!(body.starts_with(RATING_UNCERTAIN_WARNING), "{body}");
+    assert!(
+        !body.contains(UNCERTAIN_WARNING),
+        "not the generic advice: {body}"
+    );
+    for needle in [
+        "Never call rate_counterparty again for this order",
+        "unknown",
+        "get_order does not show ratings",
+        "a missing `rate-received`",
+        "only what is known",
+    ] {
+        assert!(RATING_UNCERTAIN_WARNING.contains(needle), "{needle}");
+    }
+}
+
 #[tokio::test]
-async fn an_uncertain_or_timed_out_rating_is_warned_and_a_timed_out_read_is_not() {
+async fn an_uncertain_rating_keeps_its_document_under_the_ratings_own_warning() {
     let cli = Arc::new(FakeCli::answering(|| run_of("rate_uncertain")));
     let server = MostroServer::new(Arc::clone(&cli), true);
     let uncertain = server.rate_counterparty(Parameters(rating(5))).await;
     assert_eq!(uncertain.is_error, Some(true));
-    let body = text_of(&uncertain);
-    assert!(
-        body.starts_with(crate::outcome::UNCERTAIN_WARNING),
-        "{body}"
-    );
-    assert!(body.contains("reply_timeout"), "{body}");
+    let document = uncertain
+        .structured_content
+        .clone()
+        .expect("the CLI's document");
+    let all: serde_json::Value = serde_json::from_str(OUTCOMES).unwrap();
+    assert_eq!(document, all["rate_uncertain"]["stdout"], "unchanged");
+    assert_eq!(document["status"], "uncertain");
+    assert_eq!(document["error"]["code"], "reply_timeout");
+    assert_rating_warning(&text_of(&uncertain));
+}
 
+/// The CLI's `reply_malformed` (an acknowledgement for another rating or
+/// order). No example of it exists for `order.rate`: this is the uncertain
+/// example with its code changed, to check the mapping, not the CLI.
+fn malformed_ack() -> MostroResult<CliRun> {
+    let mut run = run_of("rate_uncertain")?;
+    let mut document: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    document["error"] = serde_json::json!({"code": "reply_malformed",
+        "message": "The node's reply could not be used."});
+    run.stdout = document.to_string();
+    Ok(run)
+}
+
+#[tokio::test]
+async fn a_malformed_acknowledgement_is_an_uncertain_rating() {
+    let cli = Arc::new(FakeCli::answering(malformed_ack));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let result = server.rate_counterparty(Parameters(rating(5))).await;
+    assert_eq!(result.is_error, Some(true));
+    let document = result
+        .structured_content
+        .clone()
+        .expect("the CLI's document");
+    assert_eq!(document["status"], "uncertain");
+    assert_eq!(document["error"]["code"], "reply_malformed");
+    assert_rating_warning(&text_of(&result));
+}
+
+#[tokio::test]
+async fn a_timed_out_rating_gets_the_ratings_warning_and_a_timed_out_read_none() {
     let cli = Arc::new(FakeCli::answering(|| {
         Err(Error::Timeout(std::time::Duration::from_secs(60)))
     }));
     let server = MostroServer::new(Arc::clone(&cli), true);
     let timed_out = server.rate_counterparty(Parameters(rating(5))).await;
-    assert!(text_of(&timed_out).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    assert_eq!(timed_out.is_error, Some(true));
+    assert!(timed_out.structured_content.is_none(), "no document came");
+    let body = text_of(&timed_out);
+    assert_rating_warning(&body);
+    assert!(body.contains("did not finish within 60s"), "{body}");
+    // The generic timeout text invites a retry after checking get_order.
+    assert!(!body.contains("do not retry before"), "{body}");
+
     let read = server
         .get_order(Parameters(GetOrderParams {
             order_id: ID.into(),
         }))
         .await;
     assert_eq!(read.is_error, Some(true));
-    assert!(!text_of(&read).starts_with(crate::outcome::UNCERTAIN_WARNING));
+    let body = text_of(&read);
+    assert!(body.contains("did not finish within 60s"), "{body}");
+    assert!(!body.starts_with("UNCERTAIN"), "{body}");
+}
+
+#[tokio::test]
+async fn unreadable_output_of_a_rating_gets_the_ratings_warning() {
+    let cli = Arc::new(FakeCli::answering(|| {
+        Ok(CliRun {
+            stdout: "not a document".into(),
+            stderr: String::new(),
+            code: Some(1),
+        })
+    }));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let result = server.rate_counterparty(Parameters(rating(5))).await;
+    assert_eq!(result.is_error, Some(true));
+    let body = text_of(&result);
+    assert_rating_warning(&body);
+    assert!(body.contains("not one JSON"), "{body}");
+}
+
+#[tokio::test]
+async fn other_writes_keep_the_generic_uncertain_warning() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("dispute_uncertain")));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let disputed = server.open_dispute(Parameters(step())).await;
+    let body = text_of(&disputed);
+    assert!(
+        body.starts_with(crate::outcome::UNCERTAIN_WARNING),
+        "{body}"
+    );
+    assert!(!body.contains("rate_counterparty"), "{body}");
+}
+
+#[tokio::test]
+async fn a_watch_keeps_node_and_chat_records_whole_with_their_own_ids() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("watch_new_records")));
+    let server = MostroServer::new(Arc::clone(&cli), false);
+    let watched = server.watch_order(Parameters(watch())).await;
+    assert_ne!(watched.is_error, Some(true), "{}", text_of(&watched));
+    let document = watched.structured_content.clone().unwrap();
+    let all: serde_json::Value = serde_json::from_str(OUTCOMES).unwrap();
+    assert_eq!(
+        document, all["watch_new_records"]["stdout"],
+        "nothing dropped"
+    );
+    let data = &document["data"];
+    for message in data["messages"].as_array().unwrap() {
+        assert!(message["event_id"].is_string(), "{message}");
+    }
+    let chat = data["chat"].as_array().unwrap();
+    assert!(!chat.is_empty());
+    for line in chat {
+        // A chat record has a `message_id` and no `event_id`.
+        assert!(line["message_id"].is_string(), "{line}");
+        assert!(line.get("event_id").is_none(), "{line}");
+        assert!(line["text"].is_string(), "{line}");
+    }
+}
+
+#[tokio::test]
+async fn a_chat_read_keeps_every_message() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("chat_read")));
+    let server = MostroServer::new(Arc::clone(&cli), false);
+    let read = server
+        .read_chat(Parameters(ReadChatParams {
+            order_id: ID.into(),
+            since_minutes: None,
+        }))
+        .await;
+    let document = read.structured_content.clone().unwrap();
+    let all: serde_json::Value = serde_json::from_str(OUTCOMES).unwrap();
+    assert_eq!(document, all["chat_read"]["stdout"], "nothing dropped");
+    let ids: Vec<_> = document["data"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["message_id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids.len() > 1, "{ids:?}");
 }
 
 #[test]
@@ -805,9 +944,10 @@ fn the_instructions_end_a_trade_with_the_users_own_rating() {
 #[test]
 fn the_instructions_say_how_to_read_any_node_message() {
     for needle in [
-        // The first watch call replays: act on each message once.
+        // The first watch call replays: each record once, by its own id.
         "replays the last 30 minutes",
-        "act on each message (`event_id`) once",
+        "each node message (`event_id`) once",
+        "each chat message (`message_id`) once",
         // A null or unknown step is not "nothing to do": read the action.
         "names no step",
         "not that nothing is asked",
@@ -866,5 +1006,12 @@ fn list_messages_and_watch_order_give_the_same_message_rules() {
             );
         }
     }
-    assert!(description_of("watch_order").contains("replays the last 30 minutes"));
+    let watch = description_of("watch_order");
+    assert!(watch.contains("replays the last 30 minutes"), "{watch}");
+    // Chat records have no `event_id`: they go by `message_id`.
+    assert!(watch.contains("chat message (`message_id`)"), "{watch}");
+    assert!(
+        !watch.contains("Act on each message (`event_id`) once"),
+        "{watch}"
+    );
 }

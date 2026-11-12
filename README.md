@@ -203,12 +203,14 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 first new node message or chat message, or empty after `wait_seconds`, with a
 `cursor` to pass back as `after`; `ended` is true once the trade is over. Its
 first call replays the last 30 minutes, so the server's instructions tell agents
-to act on each message (`event_id`) once, to check each step against the
-order's status (for example `add_invoice` is valid in `waiting-buyer-invoice`,
-and in `settled-hold-invoice` after a failed payout), and to read `action` when
-`next_step` is null or unknown (a cooperative cancel request from the
-counterparty has no step). The server runs one CLI command at a time, so other tools wait while a watch does:
-keep `wait_seconds` short and loop. A watch may run `wait_seconds` plus 40 s
+to act on each node message (`event_id`) once and to read each chat message
+(`message_id`, chat records have no `event_id`) once, to check each step against
+the order's status (for example `add_invoice` is valid in
+`waiting-buyer-invoice`, and in `settled-hold-invoice` after a failed payout),
+and to read `action` when `next_step` is null or unknown (a cooperative cancel
+request from the counterparty has no step). The server runs one CLI command at
+a time, so other tools wait while a watch does: keep `wait_seconds` short and
+loop. A watch may run `wait_seconds` plus 40 s
 (the CLI's replays) past `MOSTRO_MCP_COMMAND_TIMEOUT_SECS`.
 
 The seller's payment details for the fiat travel in the order's peer chat, not
@@ -244,10 +246,12 @@ request was (or may have been) published and no usable answer came, and
 whether a rating exists cannot be known. The node gives no answer to a side
 that already rated, when the counterparty trades in full privacy, for an order
 that was never taken (it cannot name both parties) and on internal failures,
-one of which comes after the rating is stored. The tool never resends: the
-agent tells the user what is known. A repeat cannot count twice. `get_order`
-does not show ratings; a `rate-received` message for the order in
-`list_messages` confirms one, but its absence proves nothing.
+one of which comes after the rating is stored. An `uncertain` rating, a
+timeout or unreadable output of the CLI is headed by the rating's own warning,
+not the generic one: never call `rate_counterparty` again for that order, and
+tell the user it was sent and its outcome is unknown. `get_order` does not show
+ratings; a `rate-received` message for the order in `list_messages` confirms
+one, but its absence proves nothing.
 
 Like every request it sends, mostro-cli 0.17.1 mines the larger of `POW` and the
 difficulty the node advertises (for a rating, the first-contact one), on its own
@@ -385,9 +389,13 @@ loses the bond while the seller claims her share with `add_bond_invoice`. On
 2026-11-10, with mostrod v0.20.2 and mostro-cli v0.17.1, all passed in both
 modes: the trades in `success` with Bob's 15 000 sats settled, the taker's bond
 paid on every take with bonds on, and Alice's 500-sat share of a slashed
-1 000-sat bond settled. A rating test came later and has not run on regtest
-yet: a running trade refused (`invalid_order_status`), then both sides rating
-the finished trade, and a second rating `uncertain`.
+1 000-sat bond settled. Two rating tests came later and have not run on
+regtest yet: an untaken order `uncertain` (no answer) and a running trade
+refused (`invalid_order_status`), then both sides rating the finished trade
+(Bob after his watch ended) and a second rating `uncertain`; and a seller who
+rates after a solver settles the dispute (`admtakedispute`, `admsettle` with
+the node's public test key as `ADMIN_NSEC`), told `admin-settled` and no
+`rate`.
 
 ## Diagnosing a server that disappeared
 

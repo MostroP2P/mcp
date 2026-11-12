@@ -557,9 +557,32 @@ async fn the_buyer_disputes_an_active_trade_and_a_pending_order_is_refused() {
 #[tokio::test]
 #[ignore = "needs the regtest network (regtest/devenv.sh up)"]
 async fn both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused() {
+    // An order never taken has no counterparty: the node cannot place the
+    // rating and does not answer, so it is uncertain, not a refusal.
+    let alice = connect("alice", true).await;
+    let created = ok(
+        &alice,
+        "create_order",
+        json!({"kind": "sell", "fiat_code": "USD", "fiat_amount": 5,
+               "payment_method": "bank transfer", "amount_sats": 5000}),
+    )
+    .await;
+    let untaken = created["data"]["order"]["id"].as_str().unwrap().to_string();
+    let (silent, error) = call(
+        &alice,
+        "rate_counterparty",
+        json!({"order_id": untaken, "rating": 5}),
+    )
+    .await;
+    assert!(error, "{silent}");
+    assert_eq!(silent["status"], "uncertain", "{silent}");
+    assert_eq!(silent["error"]["code"], "reply_timeout", "{silent}");
+    ok(&alice, "cancel", json!({"order_id": untaken})).await;
+    alice.cancel().await.unwrap();
+
     let ActiveTrade { alice, bob, id, .. } = until_active(Maker::Seller, true).await;
 
-    // A running trade cannot be rated: the node refuses it, nothing recorded.
+    // A taken order in another status is refused: an error, nothing recorded.
     let (refused, error) = call(
         &bob,
         "rate_counterparty",
@@ -574,8 +597,10 @@ async fn both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused() {
     );
 
     // The trade finishes; each side rates from the order's status alone,
-    // without waiting for a `rate` message.
+    // without waiting for a `rate` message. Bob only rates once his watch has
+    // ended, whether or not a `rate` came in it.
     until_success(&alice, &bob, &id).await;
+    watch_until(&bob, &id, |found| found["data"]["ended"] == true).await;
 
     // Alice, the seller, and Bob, the buyer, each rate once; the node echoes
     // the rating each sent.
@@ -612,6 +637,89 @@ async fn both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused() {
             .then_some(())
     })
     .await;
+
+    alice.cancel().await.unwrap();
+    bob.cancel().await.unwrap();
+}
+
+/// The node's own key, which the regtest node also accepts as its admin: the
+/// public `mostro-regtest` test key of `regtest/mostrod/settings.toml`.
+fn node_admin_key() -> String {
+    let settings = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/regtest/mostrod/settings.toml"
+    ))
+    .expect("read the regtest node settings");
+    settings
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("nsec_privkey = "))
+        .map(|value| value.trim_matches('\'').to_string())
+        .expect("the node's nsec_privkey")
+}
+
+/// Runs mostro-cli's admin command `args` (`devenv.sh cli alice …` with
+/// `ADMIN_NSEC`), as a solver of the node would.
+fn admin(args: &[&str]) {
+    let output = std::process::Command::new(DEVENV)
+        .arg("cli")
+        .arg("alice")
+        .args(args)
+        .env("ADMIN_NSEC", node_admin_key())
+        .output()
+        .expect("run regtest/devenv.sh cli");
+    assert!(
+        output.status.success(),
+        "admin {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network (regtest/devenv.sh up)"]
+async fn the_seller_rates_after_a_solver_settles_the_dispute() {
+    let ActiveTrade { alice, bob, id, .. } = until_active(Maker::Seller, true).await;
+    let opened = ok(&bob, "open_dispute", json!({"order_id": id})).await;
+    let dispute = opened["data"]["dispute_id"].as_str().unwrap().to_string();
+
+    // A solver takes the dispute and settles it for the buyer.
+    admin(&["admtakedispute", "-d", &dispute]);
+    admin(&["admsettle", "-o", &id]);
+
+    // The seller's order reaches a status the node accepts her rating in.
+    poll("the settled status", || async {
+        matches!(
+            status(&alice, &id).await.as_deref(),
+            Some("settled-hold-invoice" | "success")
+        )
+        .then_some(())
+    })
+    .await;
+    // She is told `admin-settled`, and no `rate` asks her to rate.
+    let actions: Vec<String> = poll("the admin-settled message", || async {
+        let (document, _) = call(&alice, "list_messages", json!({"order_id": id})).await;
+        let actions: Vec<String> = document["data"]["messages"]
+            .as_array()?
+            .iter()
+            .filter_map(|m| m["action"].as_str().map(String::from))
+            .collect();
+        actions
+            .iter()
+            .any(|a| a == "admin-settled")
+            .then_some(actions)
+    })
+    .await;
+    assert!(!actions.iter().any(|a| a == "rate"), "{actions:?}");
+
+    // Her rating, the score the user chose, is still accepted.
+    let rated = ok(
+        &alice,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 4}),
+    )
+    .await;
+    assert_eq!(rated["status"], "ok", "{rated}");
+    assert_eq!(rated["data"]["order_id"], id.as_str(), "{rated}");
+    assert_eq!(rated["data"]["rating"], 4, "{rated}");
 
     alice.cancel().await.unwrap();
     bob.cancel().await.unwrap();

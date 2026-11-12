@@ -43,11 +43,14 @@ standalone module, conservative annotations and no extra confirmation parameter.
   CLI's document, unchanged; a timeout or unreadable output carries the no-retry warning.
 - **FR-003**: The description and the instructions say the rating is the user's choice, never the agent's, never sent unasked; one
   rating per side per order, final; who may rate when, from the order's status and without waiting for a `rate` message; what each
-  outcome proves (`ok` recorded, `error` nothing recorded, `uncertain` unknown, with the silent cases); never resend on one's own;
-  `get_order` does not show ratings and `rate-received` in `list_messages` confirms one.
+  outcome proves (`ok` recorded, `error` nothing recorded, `uncertain` unknown, with the silent cases); after an `uncertain` rating,
+  a timeout or unreadable output, never call `rate_counterparty` again for that order, under a warning of its own (the generic one
+  says to check the state, which no tool can for a rating); `get_order` does not show ratings and `rate-received` in
+  `list_messages` confirms one, its absence proving nothing.
 - **FR-004**: `contract::WRITE` requires `order.rate`.
 - **FR-005**: `list_messages` and `watch_order` give the same message rules: the `next_step` values of the findings, each step's
-  valid statuses in the instructions, act on each `event_id` once (the first watch replays 30 minutes), and a null or unknown
+  valid statuses in the instructions, act on each node message (`event_id`) once and read each chat message (`message_id`; chat
+  records have no `event_id`) once (the first watch replays 30 minutes), and a null or unknown
   `next_step` read from `action`. `rating` also accepts a whole number written as a float (`5.0`), as JSON Schema's `integer` does.
 - **FR-006**: The four `order.rate` examples of spec `014-order-rate` are fixtures; README and test summary updated.
 
@@ -57,3 +60,6 @@ standalone module, conservative annotations and no extra confirmation parameter.
   where it was implemented.
 - [x] **2. Review fixes (PR #16).** (2026-11-12) The guidance above, the outcome table, a `rating` of `5.0`, a vacuous contract
   assertion removed, duplicated test code shared. Regtest still not run.
+- [x] **3. Second review pass.** (2026-11-12) `event_id` for node messages, `message_id` for chat; the rating's own uncertain
+  warning (`outcome::RATING_UNCERTAIN_WARNING`) on uncertain outcomes, timeouts and unreadable output; rating outcomes checked by
+  their structure; regtest tests for an untaken order and a solver's settlement, written, not run.
