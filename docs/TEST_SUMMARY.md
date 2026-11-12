@@ -178,3 +178,9 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
 - **Regtest**: `both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused` is written and **not run** (no Docker daemon in
   this environment). The real CLI was not run either.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 135 + 17 passed (9 regtest ignored), build, `git diff --check`.
+- **Review fixes (2026-11-12)**: the `rating` schema advertised `minimum` 0 and `maximum` 255 (a plain `u8`), against the 1-to-5 rule;
+  it now carries `#[schemars(range(min = 1, max = 5))]`, so it advertises 1 and 5 (seen in `tools/list` of the built binary). The
+  stdio discovery test asserts both bounds; it failed first on `minimum` 0, and with `max = 6` or without `min` it failed again
+  (restored). The description now gives `reply_timeout` as one example of `uncertain`, not the only one. Gates: fmt, clippy
+  `-D warnings`, `cargo test` 135 + 17 passed (9 regtest ignored), build, `git diff --check`. The regtest and the real CLI were still
+  not run.

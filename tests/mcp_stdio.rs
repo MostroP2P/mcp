@@ -187,7 +187,10 @@ async fn a_client_discovers_seventeen_typed_tools() {
         .unwrap();
     let schema = serde_json::to_value(&rate.input_schema).unwrap();
     assert_eq!(schema["required"], json!(["order_id", "rating"]));
-    assert_eq!(schema["properties"]["rating"]["type"], "integer");
+    let rating = &schema["properties"]["rating"];
+    assert_eq!(rating["type"], "integer", "{rating}");
+    assert_eq!(rating["minimum"], json!(1), "{rating}");
+    assert_eq!(rating["maximum"], json!(5), "{rating}");
 
     client.cancel().await.unwrap();
 }

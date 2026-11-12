@@ -18,6 +18,7 @@ pub struct RateCounterpartyParams {
     pub order_id: String,
     /// The rating the user chose for the counterparty: 1 (worst) to 5 (best).
     /// Ask the user for it; never pick one yourself.
+    #[schemars(range(min = 1, max = 5))]
     pub rating: u8,
 }
 

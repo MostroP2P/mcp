@@ -401,10 +401,11 @@ impl<R: CliRunner> MostroServer<R> {
             order is `success`; the seller once it is `settled-hold-invoice` (after the \
             release, or a solver's settlement) or `success`. Otherwise the node refuses \
             with `invalid_order_status`. Refused unless the server runs with \
-            MOSTRO_MCP_ALLOW_WRITES=true. On `uncertain` (`reply_timeout`), never resend: \
-            the rating may be recorded, and the node answers a repeated rating with \
-            silence. get_order does not show ratings; a `rate-received` message for the \
-            order in list_messages confirms one, and its absence proves nothing.",
+            MOSTRO_MCP_ALLOW_WRITES=true. On any `uncertain` (`reply_timeout`, for \
+            example), never resend: the rating may be recorded, and the node answers a \
+            repeated rating with silence. get_order does not show ratings; a \
+            `rate-received` message for the order in list_messages confirms one, and \
+            its absence proves nothing.",
         annotations(
             title = "Rate counterparty",
             read_only_hint = false,
