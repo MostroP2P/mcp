@@ -150,9 +150,12 @@ instructions in the same pull request.
 
 - **Issue first.** Every change starts with an issue that states the problem and
   the proposal. Comment on an existing issue rather than opening a duplicate.
+- **Wait for `status: accepted`.** A maintainer adds that label once the issue
+  is real and in scope. Without it, do not open a pull request; comment on the
+  issue instead.
 - **Every change lands through a pull request.** Never commit or push to `main`
   directly, not even a one-line fix or a documentation change: branch from
-  `main`, commit there, open a pull request that links the issue
+  `main`, commit there, open a pull request that links the accepted issue
   (`Closes #N`), and let review and CI gate the merge.
 - Branch names follow `type/kebab-description`, e.g. `feat/open-dispute`,
   `docs/agents-md`.
