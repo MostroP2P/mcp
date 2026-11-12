@@ -95,12 +95,15 @@ cargo build --release          # binary at target/release/mostro-mcp
 
 ### Publishing a new version
 
-The version in `Cargo.toml` is the source of truth and the tag must match it:
-bump `version` in `Cargo.toml` (and `Cargo.lock`, e.g. with `cargo build`),
-commit, then tag and push:
+The version in `Cargo.toml` is the source of truth and the tag must match it.
+Bump `version` in `Cargo.toml` (and `Cargo.lock`, e.g. with `cargo build`) in a
+pull request; once it is merged, tag that merge commit by its SHA (another pull
+request may have been merged after it) and push the tag:
 
 ```bash
-git tag -a v0.2.0 -m "v0.2.0"
+git fetch origin
+git merge-base --is-ancestor <merge-commit-sha> origin/main   # must succeed
+git tag -a v0.2.0 <merge-commit-sha> -m "v0.2.0"
 git push origin v0.2.0
 ```
 
