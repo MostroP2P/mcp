@@ -117,8 +117,13 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 
 `watch_order` follows one trade without polling: each call returns at the
 first new node message or chat message, or empty after `wait_seconds`, with a
-`cursor` to pass back as `after`; `ended` is true once the trade is over. The
-server runs one CLI command at a time, so other tools wait while a watch does:
+`cursor` to pass back as `after`; `ended` is true once the trade is over. Its
+first call replays the last 30 minutes, so the server's instructions tell agents
+to act on each message (`event_id`) once, to check each step against the
+order's status (for example `add_invoice` is valid in `waiting-buyer-invoice`,
+and in `settled-hold-invoice` after a failed payout), and to read `action` when
+`next_step` is null or unknown (a cooperative cancel request from the
+counterparty has no step). The server runs one CLI command at a time, so other tools wait while a watch does:
 keep `wait_seconds` short and loop. A watch may run `wait_seconds` plus 40 s
 (the CLI's replays) past `MOSTRO_MCP_COMMAND_TIMEOUT_SECS`.
 
@@ -140,22 +145,34 @@ dispute on the same order with silence, so the tool reports `uncertain`;
 
 `rate_counterparty` ends a trade: it sends the rating the user chose for the
 counterparty, 1 to 5. The server's instructions tell agents to ask the user for
-the score and never to choose one, nor to rate only because a trade reached
-`success`. Each side rates an order once and cannot change it. The node accepts
-the buyer's rating once the order is `success`, and the seller's from
-`settled-hold-invoice` (after the release, or a solver's settlement) or
-`success`; anything else is refused with `invalid_order_status`. The CLI
-waits for the node's `rate-received` and checks that it carries the rating
-sent. A repeated rating gets no answer, so the tool reports `uncertain`
-(`reply_timeout`), as it does whenever the reply does not come: the rating may
-be recorded, so it is never resent. `get_order` does not show ratings; a
-`rate-received` message for the order in `list_messages` confirms one, but its
-absence proves nothing. `list_messages` marks the node's request to rate with
-action `rate` (`next_step` `rate`). Like every request it sends, mostro-cli
-0.17.1 mines the proof of work the node advertises (for a rating, the
-first-contact difficulty) on top of `POW`, up to 20 bits; a node asking for
-more fails with `pow_required` and nothing is sent until `POW` is raised to
-that. See the book's [order rate](https://mostro.network/mostro-cli-book/commands/order_rate.html)
+the score, never to choose one and never to rate unasked. Each side rates an
+order once and cannot change it. The node accepts the buyer's rating once the
+order is `success`, and the seller's from `settled-hold-invoice` (after the
+release, or a solver's settlement) or `success`. Agents go by that status, not
+by a `rate` message: a seller whose dispute a solver settled gets only
+`admin-settled`, and a watch can end before the buyer's `rate` arrives.
+
+The outcomes say what is known. `ok`: the node acknowledged this rating.
+`error`: nothing was recorded, because the node refused it
+(`invalid_order_status` for a taken order in another status) or the CLI sent
+nothing (`order_unknown`, or `pow_required` before publishing). `uncertain`: the
+request was (or may have been) published and no usable answer came, and
+whether a rating exists cannot be known. The node gives no answer to a side
+that already rated, when the counterparty trades in full privacy, for an order
+that was never taken (it cannot name both parties) and on internal failures,
+one of which comes after the rating is stored. The tool never resends: the
+agent tells the user what is known. A repeat cannot count twice. `get_order`
+does not show ratings; a `rate-received` message for the order in
+`list_messages` confirms one, but its absence proves nothing.
+
+Like every request it sends, mostro-cli 0.17.1 mines the larger of `POW` and the
+difficulty the node advertises (for a rating, the first-contact one), on its own
+up to 20 bits. A node asking for more stops the rating before it is sent
+(`pow_required`) until `POW` is raised to `error.required`. When the CLI's early
+read of the node's advertisement misses, it sends with `POW` alone; the node
+drops an under-mined request in silence, and the outcome is `uncertain` with
+`pow_required`. See the book's
+[order rate](https://mostro.network/mostro-cli-book/commands/order_rate.html)
 page and its [guide for AI agents](https://mostro.network/mostro-cli-book/wrapper/ai_agents.html).
 
 Every state-changing tool passes `--yes`: the confirmation is the MCP host's

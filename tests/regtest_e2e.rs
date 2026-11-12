@@ -251,24 +251,7 @@ async fn trade(maker: Maker, invoice_first: bool) {
         "{read}"
     );
 
-    // Bob sends the fiat and says so.
-    ok(&bob, "fiat_sent", json!({"order_id": id})).await;
-
-    // Alice sees the fiat arrive and releases.
-    poll("the fiat-sent status", || async {
-        (status(&alice, &id).await.as_deref() == Some("fiat-sent")).then_some(())
-    })
-    .await;
-    ok(
-        &alice,
-        "release",
-        json!({"order_id": id, "fiat_received": true}),
-    )
-    .await;
-    poll("the trade to succeed", || async {
-        (status(&alice, &id).await.as_deref() == Some("success")).then_some(())
-    })
-    .await;
+    until_success(&alice, &bob, &id).await;
     assert!(settled("bob", &invoice), "Bob's sats arrived");
     // Bob's watch sees the trade end.
     watch_until(&bob, &id, |found| found["data"]["ended"] == true).await;
@@ -367,6 +350,30 @@ async fn until_active(maker: Maker, invoice_first: bool) -> ActiveTrade {
         id,
         invoice,
     }
+}
+
+/// Finishes an active trade: Bob sends the fiat and says so, Alice sees it
+/// arrive and releases, and the order reaches `success`.
+async fn until_success(
+    alice: &RunningService<RoleClient, ()>,
+    bob: &RunningService<RoleClient, ()>,
+    id: &str,
+) {
+    ok(bob, "fiat_sent", json!({"order_id": id})).await;
+    poll("the fiat-sent status", || async {
+        (status(alice, id).await.as_deref() == Some("fiat-sent")).then_some(())
+    })
+    .await;
+    ok(
+        alice,
+        "release",
+        json!({"order_id": id, "fiat_received": true}),
+    )
+    .await;
+    poll("the trade to succeed", || async {
+        (status(alice, id).await.as_deref() == Some("success")).then_some(())
+    })
+    .await;
 }
 
 /// Calls watch_order with the cursor of each previous call until a result
@@ -566,22 +573,9 @@ async fn both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused() {
         "{refused}"
     );
 
-    // The trade finishes.
-    ok(&bob, "fiat_sent", json!({"order_id": id})).await;
-    poll("the fiat-sent status", || async {
-        (status(&alice, &id).await.as_deref() == Some("fiat-sent")).then_some(())
-    })
-    .await;
-    ok(
-        &alice,
-        "release",
-        json!({"order_id": id, "fiat_received": true}),
-    )
-    .await;
-    poll("the trade to succeed", || async {
-        (status(&bob, &id).await.as_deref() == Some("success")).then_some(())
-    })
-    .await;
+    // The trade finishes; each side rates from the order's status alone,
+    // without waiting for a `rate` message.
+    until_success(&alice, &bob, &id).await;
 
     // Alice, the seller, and Bob, the buyer, each rate once; the node echoes
     // the rating each sent.

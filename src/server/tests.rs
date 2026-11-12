@@ -664,12 +664,23 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
         "once per order",
         "settled-hold-invoice",
         "success",
+        "a `rate` message is not needed",
         "MOSTRO_MCP_ALLOW_WRITES=true",
-        "never resend",
+        "Never resend on your own",
+        "cannot be known",
+        "never taken",
+        "full privacy",
+        "pow_required",
+        "POW",
         "rate-received",
-        "get_order",
+        "get_order does not show ratings",
     ] {
         assert!(description.contains(needle), "{needle}: {description}");
+    }
+    // Claims the node contradicts: an untaken order gets silence, not a
+    // refusal, and some silences mean nothing can have been recorded.
+    for wrong in ["Otherwise the node refuses", "the rating may be recorded"] {
+        assert!(!description.contains(wrong), "{wrong}: {description}");
     }
 }
 
@@ -775,34 +786,85 @@ async fn an_uncertain_or_timed_out_rating_is_warned_and_a_timed_out_read_is_not(
 fn the_instructions_end_a_trade_with_the_users_own_rating() {
     for needle in [
         "rate_counterparty",
-        "the rating the user chose",
+        "the score the user chose",
         "never choose one yourself",
+        // Eligibility comes from the order's status, not from a `rate` message.
+        "Do not wait for a `rate` message",
+        "admin-settled",
+        "`ended`",
+        "the buyer may rate at `success`",
+        "the seller at `settled-hold-invoice`",
+        "get_order does not show whether a side already rated",
+        "rate-received",
+    ] {
+        assert!(INSTRUCTIONS.contains(needle), "{needle}");
+    }
+    assert!(!INSTRUCTIONS.contains("no reason to rate"));
+}
+
+#[test]
+fn the_instructions_say_how_to_read_any_node_message() {
+    for needle in [
+        // The first watch call replays: act on each message once.
+        "replays the last 30 minutes",
+        "act on each message (`event_id`) once",
+        // A null or unknown step is not "nothing to do": read the action.
+        "names no step",
+        "not that nothing is asked",
+        "a value you do not know",
+        "cooperative-cancel-initiated-by-peer",
+        // Per-step validity, not a blanket status check.
+        "`waiting-buyer-invoice`, or `settled-hold-invoice` after a failed payout",
+        "only while the order is `active`",
+        "only while the order is `fiat-sent`",
+        "never on the message alone",
     ] {
         assert!(INSTRUCTIONS.contains(needle), "{needle}");
     }
 }
 
-#[test]
-fn list_messages_names_the_next_steps_and_the_rating_request() {
+fn description_of(name: &str) -> String {
     let (server, _) = server(false);
-    let description = server
+    server
         .tool_router
         .list_all()
         .into_iter()
-        .find(|t| t.name == "list_messages")
+        .find(|t| t.name == name)
         .and_then(|t| t.description)
-        .unwrap_or_default();
-    for needle in [
-        "pay_hold_invoice",
-        "pay_bond_invoice",
-        "add_invoice",
-        "add_bond_invoice",
-        "fiat_sent",
-        "release",
-        "`rate`",
-        "null",
-        "rate_counterparty",
-    ] {
-        assert!(description.contains(needle), "{needle}: {description}");
+        .map(|d| d.to_string())
+        .unwrap_or_default()
+}
+
+#[test]
+fn list_messages_and_watch_order_give_the_same_message_rules() {
+    for tool in ["list_messages", "watch_order"] {
+        let description = description_of(tool);
+        for needle in [
+            "`action`",
+            "`next_step`",
+            "pay_hold_invoice",
+            "pay_bond_invoice",
+            "add_invoice",
+            "add_bond_invoice",
+            "fiat_sent",
+            "release",
+            "`rate`",
+            "null or unknown",
+            "read `action`",
+            "`event_id`",
+            "server instructions",
+        ] {
+            assert!(
+                description.contains(needle),
+                "{tool}: {needle}: {description}"
+            );
+        }
+        for wrong in ["asks nothing", "check get_order before acting"] {
+            assert!(
+                !description.contains(wrong),
+                "{tool}: {wrong}: {description}"
+            );
+        }
     }
+    assert!(description_of("watch_order").contains("replays the last 30 minutes"));
 }

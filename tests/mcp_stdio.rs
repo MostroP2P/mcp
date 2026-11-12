@@ -574,7 +574,24 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
         "{}",
         text(&refused)
     );
-    for bad in [json!(0), json!(6), json!(-1), json!(4.5), json!("5")] {
+    // A whole number written as a float is the same rating.
+    let rated = call(
+        &client,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 5.0}),
+    )
+    .await;
+    assert_ne!(rated.is_error, Some(true), "{}", text(&rated));
+    assert_eq!(data_of(&rated)["args"][4], "--rating=5");
+    for bad in [
+        json!(0),
+        json!(6),
+        json!(-1),
+        json!(4.5),
+        json!(5.5),
+        json!(6.0),
+        json!("5"),
+    ] {
         let refused = call(
             &client,
             "rate_counterparty",
@@ -665,6 +682,18 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
             "rate_counterparty",
             json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5}),
             "\"rating\":5",
+        ),
+        (
+            "rate_node_refused",
+            "rate_counterparty",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5}),
+            "invalid_order_status",
+        ),
+        (
+            "rate_uncertain",
+            "rate_counterparty",
+            json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5}),
+            "UNCERTAIN",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -837,41 +866,4 @@ async fn a_server_that_cannot_start_says_why_in_the_log_file() {
         text.contains("MOSTRO_CLI_PATH"),
         "the cause, not just the context: {text}"
     );
-}
-
-#[tokio::test]
-async fn a_refused_or_uncertain_rating_reaches_the_agent_as_the_cli_said() {
-    let rate = json!({"order_id": "00000000-0000-0000-0000-000000000001", "rating": 5});
-
-    let dir = tempfile::tempdir().unwrap();
-    let cli = fake_cli(&dir);
-    answer_with(&dir, "rate_node_refused");
-    let client = connect(&cli, true).await;
-    let refused = call(&client, "rate_counterparty", rate.clone()).await;
-    assert_eq!(refused.is_error, Some(true));
-    assert!(
-        !text(&refused).starts_with("UNCERTAIN"),
-        "{}",
-        text(&refused)
-    );
-    let error = &refused.structured_content.clone().unwrap()["error"];
-    assert_eq!(error["code"], "node_refused");
-    assert_eq!(error["reason"], "invalid_order_status");
-    client.cancel().await.unwrap();
-
-    let dir = tempfile::tempdir().unwrap();
-    let cli = fake_cli(&dir);
-    answer_with(&dir, "rate_uncertain");
-    let client = connect(&cli, true).await;
-    let uncertain = call(&client, "rate_counterparty", rate).await;
-    assert_eq!(uncertain.is_error, Some(true));
-    assert!(
-        text(&uncertain).starts_with("UNCERTAIN"),
-        "{}",
-        text(&uncertain)
-    );
-    let document = uncertain.structured_content.clone().unwrap();
-    assert_eq!(document["status"], "uncertain");
-    assert_eq!(document["error"]["code"], "reply_timeout");
-    client.cancel().await.unwrap();
 }

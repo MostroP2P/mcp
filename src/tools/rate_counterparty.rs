@@ -7,7 +7,7 @@
 //! validates the arguments and passes the outcome on.
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{flag, order_id};
 use crate::error::{Result, invalid};
@@ -19,7 +19,24 @@ pub struct RateCounterpartyParams {
     /// The rating the user chose for the counterparty: 1 (worst) to 5 (best).
     /// Ask the user for it; never pick one yourself.
     #[schemars(range(min = 1, max = 5))]
+    #[serde(deserialize_with = "whole_number")]
     pub rating: u8,
+}
+
+/// A `u8` written as a JSON integer or as a float with no fraction (`5.0`):
+/// JSON Schema's `integer` allows both, and some hosts send every number as a
+/// float. Anything else (a fraction, a string, out of range) is refused.
+fn whole_number<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<u8, D::Error> {
+    let number = serde_json::Number::deserialize(deserializer)?;
+    let whole = number.as_u64().or_else(|| {
+        number
+            .as_f64()
+            .filter(|f| f.fract() == 0.0 && (0.0..=f64::from(u8::MAX)).contains(f))
+            .map(|f| f as u64)
+    });
+    whole.and_then(|n| u8::try_from(n).ok()).ok_or_else(|| {
+        serde::de::Error::custom(format!("`{number}` is not a whole number from 0 to 255"))
+    })
 }
 
 /// `order rate --order=<id> --rating=<n> --yes`.
@@ -94,19 +111,39 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_number_is_a_rating_however_json_writes_it() {
+        for (written, rating) in [
+            ("1", 1),
+            ("3", 3),
+            ("5", 5),
+            ("5.0", 5),
+            ("5e0", 5),
+            ("0", 0),
+        ] {
+            let params: RateCounterpartyParams = serde_json::from_value(json_of(written))
+                .unwrap_or_else(|e| panic!("{written}: {e}"));
+            assert_eq!(params.rating, rating, "{written}");
+        }
+        // Read as 0 or 6, still refused before the CLI runs.
+        for out_of_range in ["0.0", "6.0"] {
+            let params: RateCounterpartyParams =
+                serde_json::from_value(json_of(out_of_range)).unwrap();
+            assert!(args(&params).is_err(), "{out_of_range}");
+        }
+    }
+
+    #[test]
     fn a_rating_that_is_not_a_small_whole_number_is_refused_by_its_type() {
         for bad in [
-            json_of("-1"),
-            json_of("256"),
-            json_of("4.5"),
-            json_of("\"5\""),
+            "-1", "256", "256.0", "4.5", "5.5", "-0.5", "\"5\"", "null", "true",
         ] {
             assert!(
-                serde_json::from_value::<RateCounterpartyParams>(bad.clone()).is_err(),
+                serde_json::from_value::<RateCounterpartyParams>(json_of(bad)).is_err(),
                 "{bad}"
             );
         }
-        assert!(serde_json::from_value::<RateCounterpartyParams>(json_of("3")).is_ok());
+        let missing = serde_json::json!({ "order_id": ID });
+        assert!(serde_json::from_value::<RateCounterpartyParams>(missing).is_err());
     }
 
     fn json_of(rating: &str) -> serde_json::Value {

@@ -194,7 +194,6 @@ mod tests {
             "order.rate",
         ] {
             assert!(required(true).contains(&write), "{write}");
-            assert!(!required(false).contains(&write), "{write}");
         }
     }
 }

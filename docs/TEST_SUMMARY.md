@@ -184,3 +184,31 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
   (restored). The description now gives `reply_timeout` as one example of `uncertain`, not the only one. Gates: fmt, clippy
   `-D warnings`, `cargo test` 135 + 17 passed (9 regtest ignored), build, `git diff --check`. The regtest and the real CLI were still
   not run.
+
+## Follow-up: Review Fixes For Rating (PR #16): 2026-11-12
+
+Static review by the maintainer, checked here against mostrod `v0.20.2` and mostro-cli `v0.17.1` source.
+
+- **Guidance** (`server.rs`): the instructions now hold one set of message rules for list_messages and watch_order, and both
+  descriptions repeat them. A watch's first call replays 30 minutes, so each `event_id` is acted on once. Each step has its own valid
+  statuses: `add_invoice` in `waiting-buyer-invoice`, and in `settled-hold-invoice` after a failed payout (`add_invoice.rs:83`);
+  `fiat_sent` only while `active`; `release` only while `fiat-sent` and on the user's word. A null or unknown `next_step` is read
+  from `action` (`cooperative-cancel-initiated-by-peer` has none). Rating goes by the order's status, not a `rate` message: a
+  solver's settlement sends the seller only `admin-settled`, and a watch can end before the buyer's `rate` (10 s grace, cut at the
+  deadline). The rate_counterparty outcomes say what each one proves. An untaken order is silent, not `invalid_order_status`
+  (`prepare_variables_for_vote`, internal errors only logged). A full-privacy counterparty is silent with nothing recorded, and a
+  failed rating event after the commit is silent with the rating stored. A missed PoW probe ends `uncertain` / `pow_required`.
+  README, spec 002 and the fixtures README are corrected to match: PoW is `max(POW, advertised)`, and the `proposed` caveat is
+  dropped because all 16 v0.17.1 example files are `proposed`.
+- **`rating` of `5.0`**: reproduced first: rmcp refused it ("invalid type: floating point"). `rating` now reads a whole number written
+  as an integer or a float with no fraction. Its schema stays integer 1 to 5. `5.5`, `"5"`, `256.0` and negatives are refused, and
+  `0.0` / `6.0` are refused by the 1-to-5 check. Seen on the built binary with a logging stand-in CLI: `5.0` ran `--rating=5`, and the
+  refused calls started no CLI. Other integer parameters of the server are unchanged.
+- **Tests**: written red first (five unit tests and the stdio whole-trade test). The `!required(false).contains("order.rate")`
+  assertion was vacuous next to the `assert_eq` on `required(false)` and is removed, so the earlier "required with writes on only"
+  entry rested on that `assert_eq`. The duplicated stdio rating test became two table rows. The regtest's copy of the end of
+  `trade()` is now a shared `until_success`; it compiles, and was not run.
+- **Mutation checks**: accepting fractions, dropping the whole-number reader, dropping `order.rate` from `WRITE`, moving it to `READ`,
+  and dropping the `event_id` rule from watch_order each failed a test. All restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 137 + 16 passed (9 regtest ignored), build, `git diff --check`. Not run: the
+  regtest (no Docker daemon here) and a real mostro-cli binary. No test covers a seller rating after a solver's settlement on a node.
