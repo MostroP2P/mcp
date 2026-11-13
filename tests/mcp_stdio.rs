@@ -739,8 +739,39 @@ async fn the_cli_s_rating_outcomes_reach_the_agent_intact() {
     let body = text(&uncertain);
     assert!(body.starts_with("UNCERTAIN RATING"), "{body}");
     assert!(
-        body.contains("Never call rate_counterparty again for this order and side")
+        body.contains("Do not call rate_counterparty again on your own")
+            && body.contains("harmless but usually pointless")
             && body.contains("may have been sent, but whether it was recorded is unknown"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("Never call rate_counterparty again for this order and side"),
+        "{body}"
+    );
+
+    // `uncertain` / `pow_required` (no CLI example exists; this is the
+    // uncertain example with the error the CLI builds for it).
+    let mut short: Value = serde_json::from_str(OUTCOMES).unwrap();
+    let short = short["rate_uncertain"]["stdout"].take();
+    let mut short = short;
+    short["error"] = json!({"code": "pow_required",
+        "message": "The node requires more proof of work than is configured.",
+        "required": 22, "configured": 0});
+    std::fs::write(dir.path().join("reply.json"), short.to_string()).unwrap();
+    let pow = call(
+        &client,
+        "rate_counterparty",
+        json!({"order_id": order, "rating": 5}),
+    )
+    .await;
+    assert_eq!(pow.is_error, Some(true));
+    let document = pow.structured_content.clone().expect("a document");
+    assert_eq!(document["error"]["code"], "pow_required");
+    let body = text(&pow);
+    assert!(
+        body.starts_with("UNCERTAIN RATING, TOO LITTLE PROOF OF WORK")
+            && body.contains("the node requires 22 bits")
+            && body.contains("one more attempt"),
         "{body}"
     );
     client.cancel().await.unwrap();

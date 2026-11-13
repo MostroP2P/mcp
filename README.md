@@ -251,10 +251,22 @@ that already rated, when the counterparty trades in full privacy, for an order
 that was never taken (it cannot name both parties) and on internal failures,
 one of which comes after the rating is stored. An `uncertain` rating, a
 timeout, unreadable output, or a CLI that started and then failed is headed by
-the rating's own warning, not the generic one: never call `rate_counterparty`
-again for that order and side, and tell the user the rating may have been sent,
-but whether it was recorded is unknown. A CLI that could not start sent nothing
-and is a plain error. `get_order` does not show ratings. Only the tool's `ok`
+the rating's own warning, not the generic one: tell the user the rating may
+have been sent, but whether it was recorded is unknown, and do not call
+`rate_counterparty` again on the agent's own. mostrod (v0.20.2,
+`claim_order_rating_flag`) claims a side's rating flag atomically, in the same
+transaction as the score (`... AND buyer_sent_rate = 0`), so a second rating
+from the same side can never count twice; but it cannot replace a recorded
+rating either, and in every silent case above it gets the same silence. Another
+attempt is therefore harmless but usually pointless, and is made only when the
+user asks for it. `uncertain` with `pow_required` gets a warning of its own: the
+node most likely dropped the rating for too little proof of work (likely, not
+proven); the warning names the bits the node requires (`error.required`) and
+the `POW` that was mined (`error.configured`), and says one more attempt, with
+the user's go-ahead, is reasonable once the server runs with `POW` at least
+`error.required` (`POW` is read at startup). If that attempt is uncertain too,
+the agent stops. Nothing is ever retried automatically. A CLI that could not
+start sent nothing and is a plain error. `get_order` does not show ratings. Only the tool's `ok`
 proves the exact rating: mostro-cli accepts as the acknowledgement only a
 `rate-received` for the same order carrying the same rating, and this server
 passes that result on without checking anything itself. A `rate-received`
@@ -401,13 +413,16 @@ loses the bond while the seller claims her share with `add_bond_invoice`. On
 2026-11-10, with mostrod v0.20.2 and mostro-cli v0.17.1, all passed in both
 modes: the trades in `success` with Bob's 15 000 sats settled, the taker's bond
 paid on every take with bonds on, and Alice's 500-sat share of a slashed
-1 000-sat bond settled. Two rating tests came later and have not run on
-regtest yet: an untaken order `uncertain` (no answer) and a running trade
-refused (`invalid_order_status`), then both sides rating the finished trade
-(Bob after his watch ended) and a second rating `uncertain`; and a seller who
-rates after a solver settles the dispute (`admtakedispute`, `admsettle` with
-the node's public test key as `ADMIN_NSEC`), told `admin-settled` and no
-`rate`.
+1 000-sat bond settled. Two rating tests came later: an untaken order
+`uncertain` (no answer) and a running trade refused (`invalid_order_status`),
+then both sides rating the finished trade (Bob after his watch ended) and a
+second rating from the same side `uncertain`; and a seller who rates after a
+solver settles the dispute (`admtakedispute`, `admsettle` with the node's
+public test key as `ADMIN_NSEC`), told `admin-settled` and no `rate`. On
+2026-11-13, with the same versions, all ten passed (nine without bonds, the
+bond test with them). Read afterwards from the node's database, the second
+rating (a 1 after a 5) was not counted: Bob's identity holds two reviews, a 5
+and a 4, with a minimum of 4.
 
 ## Diagnosing a server that disappeared
 

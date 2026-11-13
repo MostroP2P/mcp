@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-12
 
-**Status**: Implemented; unit and stdio tests pass. The regtest test is written and has not been run. Evidence in
+**Status**: Implemented; unit, stdio and regtest tests pass (regtest first run 2026-11-13, mostrod v0.20.2, mostro-cli v0.17.1). Evidence in
 [docs/TEST_SUMMARY.md](../../docs/TEST_SUMMARY.md).
 
 **Input**: issue #10. [Spec 001](../001-json-migration/spec.md) left `rate` out of scope. mostro-cli 0.17.1, the version this server
@@ -47,9 +47,11 @@ standalone module, conservative annotations and no extra confirmation parameter.
 - **FR-003**: The description and the instructions say the rating is the user's choice, never the agent's, never sent unasked; one
   rating per side per order, final; who may rate when, from the order's status and without waiting for a `rate` message; what each
   outcome proves (`ok` recorded, `error` nothing recorded, `uncertain` unknown, with the silent cases); after an `uncertain` rating,
-  a timeout, unreadable output or a CLI that started and then failed (`Error::IoAfterStart`), never call `rate_counterparty` again
-  for that order and side, and say the rating may have been sent but whether it was recorded is unknown, under a warning of its own
-  (the generic one says to check the state, which no tool can for a rating); a CLI that never started sent nothing; `get_order`
+  a timeout, unreadable output or a CLI that started and then failed (`Error::IoAfterStart`), say the rating may have been sent but
+  whether it was recorded is unknown, under a warning of its own (the generic one says to check the state, which no tool can for a
+  rating), and never call `rate_counterparty` again on the agent's own: another attempt cannot count twice (FR-007) but is usually
+  pointless, so it is made only when the user asks; `uncertain` with `pow_required` gets its own warning (FR-007); a CLI that
+  never started sent nothing; `get_order`
   does not show ratings; only the tool's `ok` proves the exact rating, and a `rate-received` record in `list_messages` shows a
   rating was recorded but not which one (a missing acknowledgement, a missing rating payload or a mismatched rating confirms
   nothing).
@@ -59,6 +61,16 @@ standalone module, conservative annotations and no extra confirmation parameter.
   records have no `event_id`) once (the first watch replays 30 minutes), and a null or unknown
   `next_step` read from `action`. `rating` also accepts a whole number written as a float (`5.0`), as JSON Schema's `integer` does.
 - **FR-006**: The four `order.rate` examples of spec `014-order-rate` are fixtures; README and test summary updated.
+- **FR-007**: Another attempt after an uncertain rating. mostrod v0.20.2 claims a side's rating flag with one conditional update in
+  the same transaction as the score (`db.rs` `claim_order_rating_flag`: `UPDATE orders SET buyer_sent_rate = 1 WHERE id = ? AND
+  buyer_sent_rate = 0 AND status = ?`, the seller's alike; `rate_user.rs` commits the score only when the claim won, and returns early
+  when the flag is already set). So a second rating from the same side is never counted and never replaces the first; it is answered
+  with the same silence as every silent case above. The rating's warning therefore says another attempt is harmless but usually
+  pointless and is made only when the user asks, never on the agent's own. For `uncertain` with `pow_required` (published, then a
+  late read of the node's advertisement asks for more work than was mined) the warning says the node most likely dropped the rating
+  unread (not proven), names `error.required` and `error.configured` when they are bit counts (0 to 255; anything else is not
+  echoed), and says one more attempt, with the user's explicit go-ahead, is reasonable once the server runs with `POW` at least
+  `error.required` (`POW` is read at startup); if that attempt is uncertain too, stop. This server never retries anything itself.
 
 ## Slice
 
@@ -73,3 +85,7 @@ standalone module, conservative annotations and no extra confirmation parameter.
   started (`Error::IoAfterStart`) carries the rating's warning, a spawn failure does not; distinct chat `message_id`s kept.
 - [x] **5. Exact acknowledgement.** (2026-11-13) Only the tool's `ok` proves the exact rating (same order, same rating, checked by
   the CLI); a `rate-received` record in `list_messages` has no score, so it shows a rating was recorded, not which one.
+- [x] **6. Another attempt after an uncertain rating.** (2026-11-13) The blanket "never call it again for this order and side" is
+  replaced by FR-007, after checking mostrod v0.20.2's per-side claim; `uncertain` / `pow_required` names the bits and allows one
+  more attempt, with the user's go-ahead, once `POW` is raised. Regtest run for the first time: all ten tests pass, and the node's
+  database shows a second rating from the same side was not counted.

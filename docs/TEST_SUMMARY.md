@@ -278,3 +278,45 @@ order carrying `Payload::RatingUser(r)` with `r` the rating sent (`outcome/rate.
   Both were written first and failed. Mutation: putting the old instructions sentence back failed the first; restored.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 149 + 17 passed (10 regtest ignored), `cargo build`, `cargo build --release`,
   `git diff --check`. Not run: the regtest (no Docker daemon), the Windows check (target not installed), a real mostro-cli binary.
+
+## Follow-up: Another Attempt After An Uncertain Rating (PR #16): 2026-11-13
+
+From the maintainer's review of `eab9dbc` (the open thread on "never resend"). Base `upstream/main` `3966bae`, unchanged since the
+last merge, so nothing was merged. Checked against mostrod `v0.20.2` and mostro-cli `v0.17.1` source.
+
+- **The node's guarantee, read in source**: `rate_user.rs` returns early when the sender's flag is already set, then claims it with
+  `db.rs` `claim_order_rating_flag` (`UPDATE orders SET buyer_sent_rate = 1 WHERE id = ? AND buyer_sent_rate = 0 AND status = ?`,
+  the seller's alike) in the same transaction as the score, and commits the score only when the claim won. A second rating from the
+  same side is never counted, never replaces the first, and gets no answer. So the blanket "never call rate_counterparty again for
+  this order and side" had no safety basis.
+- **Guidance** (`outcome.rs`, `server.rs`): the rating's warning now says not to call `rate_counterparty` again on the agent's own;
+  another attempt can never count twice but is usually pointless (the node answers a repeat, a full-privacy counterparty and an
+  untaken order with the same silence), so it is made only when the user asks. `uncertain` with `pow_required` gets its own warning
+  (`outcome::rating_uncertain_warning`): the node most likely dropped the rating for too little work (not proven); it names
+  `error.required` and `error.configured` when they are bit counts (0 to 255, anything else is not echoed), and allows one more
+  attempt, with the user's explicit go-ahead, once the server runs with `POW` at least `error.required`; if that one is uncertain
+  too, stop. Nothing is retried by the server. Timeouts, unreadable output and failures after start keep the general rating
+  warning (no document, so no `pow_required` to read). `error.rs` is unchanged: the rating already overrides its timeout text.
+- **Tests, red first** (10 failed before the change): the POW warning with numbers, without them or with non-bit values, only on
+  `uncertain` (an `error` `pow_required` is a plain error), the other uncertain codes keep the general warning, the description and
+  instructions drop the blanket ban, and the stdio rating test covers `uncertain` / `pow_required` end to end. No CLI example of
+  `uncertain` / `pow_required` exists at v0.17.1; the tests build it from the `rate_uncertain` example with the error the CLI's
+  `ErrorInfo::with_work` produces, and say so. The fake runner now takes a closure so those cases can be built.
+- **Weak assertion found and fixed**: the `rate` needle of the list_messages / watch_order test matched any sentence naming a `rate`
+  message; it now matches the step list itself, and the instructions' `rate` step is pinned. Rewriting the list to drop the step
+  while keeping the word `rate` failed it.
+- **Mutation checks**: the server ignoring the POW selector failed two tests; dropping the `uncertain` check failed one; dropping the
+  0-255 bound failed one; the blanket ban restored failed six; dropping "one more attempt" failed one; dropping the `rate` step from
+  the list or the instructions failed one each; dropping the whole-number reader failed one. All restored. Not pinned by any test:
+  `cli_backend.rs` mapping a real read or `wait` failure to `Error::IoAfterStart` (it cannot be induced here; changing it to
+  `Error::Io` left every test green).
+- **Regtest, run for the first time on this PR**: Docker daemon started locally; mostrod `v0.20.2` image built from
+  `regtest/mostrod/Dockerfile` with its pinned SHA-256 checked (the build container was given this environment's proxy CA through
+  the local `debian:bookworm-slim` base; no repository file changed); mostro-cli `v0.17.1` built from its tag. `cargo test --test
+  regtest_e2e -- --ignored --test-threads=1 --skip loses_the_bond`: 9 passed, including both rating tests. With `MOSTRO_BONDS=1
+  regtest/devenv.sh up`, the bond test: 1 passed. Afterwards, mostrod's database: Bob's identity holds `total_reviews` 2, `min_rating`
+  4, `max_rating` 5 (Alice's 5 and 4); her second rating of the first order (a 1) was not counted. Not reproduced: a full-privacy
+  counterparty and a missed PoW probe.
+- **Gates**: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 154 unit + 17 stdio passed
+  (10 regtest ignored by default; run above), `cargo build`, `cargo build --release`, `git diff --check`. Not run: the Windows check
+  of AGENTS.md (target not installed; no Unix API added).

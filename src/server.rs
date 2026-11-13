@@ -12,7 +12,9 @@ use rmcp::{
 
 use crate::cli_backend::CliRunner;
 use crate::error::{Error, Result as MostroResult};
-use crate::outcome::{Outcome, RATING_UNCERTAIN_WARNING, UNCERTAIN_WARNING, excerpt};
+use crate::outcome::{
+    Outcome, RATING_UNCERTAIN_WARNING, UNCERTAIN_WARNING, excerpt, rating_uncertain_warning,
+};
 use crate::tools::{
     add_invoice::{self, AddInvoiceParams},
     chat::{self, ReadChatParams, SendChatParams},
@@ -120,8 +122,13 @@ Every result is the JSON outcome document of mostro-cli: `status` (`ok`, `error`
 `uncertain`), `data` (with `next_step` where the node asks the user for something), \
 `error` and `warnings`. An `uncertain` result means the request may have reached the \
 node: never retry it on your own, check the state first (get_order, list_my_orders, \
-list_messages). A rating is the exception: no tool shows it, so after an uncertain \
-rating never call rate_counterparty again for that order and side.
+list_messages). A rating is the exception: no tool shows it, so checking settles \
+nothing. After an uncertain rating never call rate_counterparty again on your own. The \
+node keeps at most one rating per side, so another attempt can never count twice, but it \
+is usually pointless; make one only when the user asks after hearing that. `uncertain` \
+with `pow_required` means the node most likely dropped the rating for too little proof \
+of work: tell the user the bits it requires (`error.required`); one more attempt makes \
+sense only once this server runs with POW at least that high.
 
 The mostro-cli book describes these documents: https://mostro.network/mostro-cli-book/ \
 (error codes: errors.html; `next_step` and node actions: reference/actions.html; \
@@ -458,9 +465,15 @@ impl<R: CliRunner> MostroServer<R> {
             counterparty trades in full privacy, for an order that was never taken, \
             and on internal failures, one of them after the rating is stored. \
             `uncertain` with `pow_required`: the node most likely dropped it for too \
-            little proof of work (POW under `error.required`), but that is not proven. \
-            After any `uncertain`, never call rate_counterparty again for this order \
-            and side: tell the user the rating may have been sent, but whether it was \
+            little proof of work (POW under `error.required`), but that is not proven: \
+            tell the user the bits the node requires; one more attempt is reasonable \
+            once this server runs with POW at least `error.required`, and only with the \
+            user's go-ahead. After any `uncertain`, never call rate_counterparty again \
+            on your own. The node keeps at most one rating per side and claims it \
+            atomically, so another attempt can never count twice, but it cannot change \
+            a recorded rating and gets the same silence in the cases above: for other \
+            `uncertain` outcomes it is harmless but usually pointless, so make one only \
+            when the user asks. Tell the user the rating may have been sent, but whether it was \
             recorded is unknown. get_order does not show ratings. Only \
             rate_counterparty's `ok` proves the exact rating: mostro-cli accepts only \
             a `rate-received` for the same order carrying the same rating, and this \
@@ -537,7 +550,10 @@ impl<R: CliRunner> MostroServer<R> {
                 Ok(outcome) => {
                     tracing::info!(%command, status = ?outcome.status(), "mostro-cli finished");
                     match reach {
-                        Reach::Rating => outcome.into_tool_result_warned(RATING_UNCERTAIN_WARNING),
+                        Reach::Rating => {
+                            let warning = rating_uncertain_warning(&outcome);
+                            outcome.into_tool_result_warned(&warning)
+                        }
                         Reach::Local | Reach::Node => outcome.into_tool_result(),
                     }
                 }

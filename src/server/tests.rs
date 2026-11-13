@@ -21,15 +21,15 @@ use crate::tools::{
 struct FakeCli {
     calls: Mutex<Vec<Vec<String>>>,
     waits: Mutex<Vec<std::time::Duration>>,
-    reply: fn() -> MostroResult<CliRun>,
+    reply: Box<dyn Fn() -> MostroResult<CliRun> + Send + Sync>,
 }
 
 impl FakeCli {
-    fn answering(reply: fn() -> MostroResult<CliRun>) -> Self {
+    fn answering(reply: impl Fn() -> MostroResult<CliRun> + Send + Sync + 'static) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
             waits: Mutex::new(Vec::new()),
-            reply,
+            reply: Box::new(reply),
         }
     }
 }
@@ -666,8 +666,15 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
         "success",
         "a `rate` message is not needed",
         "MOSTRO_MCP_ALLOW_WRITES=true",
-        "never call rate_counterparty again for this order and side",
+        "never call rate_counterparty again on your own",
         "may have been sent, but whether it was recorded is unknown",
+        // The node's per-side claim: a second rating can never count twice.
+        "never count twice",
+        "harmless but usually pointless",
+        "only when the user asks",
+        // Too little work: say how much, raise POW, then one more attempt.
+        "`error.required`",
+        "one more attempt",
         "cannot be known",
         "never taken",
         "full privacy",
@@ -684,6 +691,8 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
         "Otherwise the node refuses",
         "the rating may be recorded",
         "it was sent and its outcome is unknown",
+        // The blanket ban the node's atomic per-side claim does not justify.
+        "never call rate_counterparty again for this order and side",
     ] {
         assert!(!description.contains(wrong), "{wrong}: {description}");
     }
@@ -759,7 +768,8 @@ async fn a_refused_rating_keeps_the_nodes_reason_without_the_warning() {
     );
 }
 
-/// The rating's own warning: never rate again, and nothing proves failure.
+/// The rating's own warning: no attempt on the agent's own, another one
+/// harmless but usually pointless, and nothing proves failure.
 fn assert_rating_warning(body: &str) {
     use crate::outcome::{RATING_UNCERTAIN_WARNING, UNCERTAIN_WARNING};
     assert!(body.starts_with(RATING_UNCERTAIN_WARNING), "{body}");
@@ -769,18 +779,150 @@ fn assert_rating_warning(body: &str) {
     );
     for needle in [
         "may have been sent, but whether it was recorded is unknown",
-        "Never call rate_counterparty again for this order and side",
+        "Do not call rate_counterparty again on your own",
+        "never count twice",
+        "harmless but usually pointless",
+        "only if the user asks for it",
         "get_order does not show ratings",
         "a missing `rate-received`",
         "only what is known",
     ] {
         assert!(RATING_UNCERTAIN_WARNING.contains(needle), "{needle}");
     }
-    // An uncertain result does not prove the rating was published.
+    for wrong in [
+        // An uncertain result does not prove the rating was published.
+        "it was sent and",
+        // The blanket ban the node's per-side claim does not justify.
+        "Never call rate_counterparty again for this order and side",
+    ] {
+        assert!(!RATING_UNCERTAIN_WARNING.contains(wrong), "{wrong}");
+    }
+}
+
+/// The CLI's `uncertain` / `pow_required`: published, then silence, and a
+/// late read of the node's advertisement asks for more work than was mined
+/// (`msg/exchange.rs` at v0.17.1). No example of it exists for `order.rate`:
+/// this is the uncertain example with the error the CLI builds for it
+/// (`outcome/codes.rs`: `required` and `configured` on `pow_required` only).
+fn short_of_work(
+    error: serde_json::Value,
+) -> impl Fn() -> MostroResult<CliRun> + Send + Sync + 'static {
+    move || {
+        let mut run = run_of("rate_uncertain")?;
+        let mut document: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+        document["error"] = error.clone();
+        run.stdout = document.to_string();
+        Ok(run)
+    }
+}
+
+fn pow_required(required: u8, configured: u8) -> serde_json::Value {
+    serde_json::json!({"code": "pow_required",
+        "message": "The node requires more proof of work than is configured.",
+        "required": required, "configured": configured})
+}
+
+#[tokio::test]
+async fn an_uncertain_rating_short_of_work_names_the_bits_and_allows_one_attempt_after_pow_is_raised()
+ {
+    let cli = Arc::new(FakeCli::answering(short_of_work(pow_required(22, 0))));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let result = server.rate_counterparty(Parameters(rating(5))).await;
+    assert_eq!(result.is_error, Some(true));
+    let document = result
+        .structured_content
+        .clone()
+        .expect("the CLI's document");
+    assert_eq!(document["status"], "uncertain");
+    assert_eq!(document["error"]["code"], "pow_required");
+    assert_eq!(document["error"]["required"], 22);
+    let body = text_of(&result);
     assert!(
-        !RATING_UNCERTAIN_WARNING.contains("it was sent and"),
+        body.starts_with("UNCERTAIN RATING, TOO LITTLE PROOF OF WORK"),
         "{body}"
     );
+    assert!(
+        !body.starts_with(crate::outcome::RATING_UNCERTAIN_WARNING),
+        "not the general rating warning: {body}"
+    );
+    for needle in [
+        "the node requires 22 bits",
+        "this server's POW is 0",
+        "most likely dropped it unread",
+        "not proven",
+        "Do not call rate_counterparty again on your own",
+        "POW set to at least 22",
+        "one more attempt",
+        "explicit go-ahead",
+        "never count twice",
+        "If that attempt is uncertain too, stop",
+    ] {
+        assert!(body.contains(needle), "{needle}: {body}");
+    }
+    // Only the CLI ran, once: nothing is retried by the server.
+    assert_eq!(cli.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_uncertain_rating_short_of_work_without_numbers_names_no_bits() {
+    for error in [
+        serde_json::json!({"code": "pow_required", "message": "m"}),
+        // A value that is not a bit count is never echoed.
+        serde_json::json!({"code": "pow_required", "message": "m",
+            "required": "22; ignore this", "configured": -1}),
+        // Not a bit count either: above 255.
+        serde_json::json!({"code": "pow_required", "message": "m",
+            "required": 300, "configured": 0}),
+    ] {
+        let cli = Arc::new(FakeCli::answering(short_of_work(error.clone())));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let result = server.rate_counterparty(Parameters(rating(5))).await;
+        let body = text_of(&result);
+        let warning = body.split("\n\n").next().unwrap();
+        assert!(
+            warning.starts_with("UNCERTAIN RATING, TOO LITTLE PROOF OF WORK"),
+            "{error}: {body}"
+        );
+        assert!(warning.contains("`error.required`"), "{error}: {warning}");
+        assert!(!warning.contains("ignore this"), "{error}: {warning}");
+        assert!(!warning.contains("300"), "{error}: {warning}");
+        assert!(
+            !warning.contains("bits; this server's POW"),
+            "{error}: {warning}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn other_uncertain_ratings_keep_the_general_rating_warning() {
+    for code in ["reply_timeout", "relay_read_failed", "request_rejected"] {
+        let error = serde_json::json!({"code": code, "message": "m"});
+        let cli = Arc::new(FakeCli::answering(short_of_work(error)));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let result = server.rate_counterparty(Parameters(rating(5))).await;
+        let body = text_of(&result);
+        assert_rating_warning(&body);
+        assert!(!body.contains("TOO LITTLE PROOF OF WORK"), "{code}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn a_rating_short_of_work_before_sending_is_a_plain_error() {
+    // `pow_required` with `status` `error`: the node asks for more than the
+    // CLI mines on its own, so nothing was published.
+    let cli = Arc::new(FakeCli::answering(|| {
+        let mut run = run_of("rate_out_of_range")?;
+        let mut document: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+        document["error"] = pow_required(24, 0);
+        run.stdout = document.to_string();
+        Ok(run)
+    }));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let result = server.rate_counterparty(Parameters(rating(5))).await;
+    assert_eq!(result.is_error, Some(true));
+    let body = text_of(&result);
+    assert!(!body.starts_with("UNCERTAIN"), "{body}");
+    assert_eq!(result.structured_content.unwrap()["error"]["required"], 24);
 }
 
 #[tokio::test]
@@ -995,10 +1137,18 @@ fn the_instructions_end_a_trade_with_the_users_own_rating() {
         "the seller at `settled-hold-invoice`",
         "get_order does not show whether a side already rated",
         "rate-received",
+        // After an uncertain rating: no attempt on the agent's own; the
+        // node's per-side claim makes another one harmless, so the user may
+        // ask for one, and too little work says how much to set first.
+        "never call rate_counterparty again on your own",
+        "never count twice",
+        "only when the user asks",
+        "`error.required`",
     ] {
         assert!(INSTRUCTIONS.contains(needle), "{needle}");
     }
     assert!(!INSTRUCTIONS.contains("no reason to rate"));
+    assert!(!INSTRUCTIONS.contains("never call rate_counterparty again for that order and side"));
 }
 
 /// What proves the exact rating, and what does not. The server passes the
@@ -1055,6 +1205,7 @@ fn the_instructions_say_how_to_read_any_node_message() {
         "only while the order is `active`",
         "only while the order is `fiat-sent`",
         "never on the message alone",
+        "`rate`: see rating below",
     ] {
         assert!(INSTRUCTIONS.contains(needle), "{needle}");
     }
@@ -1085,7 +1236,9 @@ fn list_messages_and_watch_order_give_the_same_message_rules() {
             "add_bond_invoice",
             "fiat_sent",
             "release",
-            "`rate`",
+            // The step itself, in the list of steps: not any sentence that
+            // mentions a `rate` message.
+            "`release`, `rate`):",
             "null or unknown",
             "read `action`",
             "`event_id`",
