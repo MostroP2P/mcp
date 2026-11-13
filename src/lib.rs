@@ -10,6 +10,7 @@ pub mod config;
 pub mod contract;
 pub mod diagnostics;
 pub mod error;
+pub mod nodes;
 pub mod outcome;
 pub mod server;
 pub mod tools;

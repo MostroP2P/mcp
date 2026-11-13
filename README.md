@@ -127,8 +127,8 @@ server never reads.
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `MOSTRO_PUBKEY` | yes | The Mostro node, hex or npub |
-| `RELAYS` | yes | Comma-separated `ws://` / `wss://` relays |
+| `MOSTRO_PUBKEY` | no | The Mostro node, hex or npub. Default: Mostro Global (see [Nodes](#nodes)) |
+| `RELAYS` | no | Comma-separated `ws://` / `wss://` relays. Default: the node's relays from the catalog; required for a node outside it |
 | `MOSTRO_CLI_PATH` | no | The CLI binary; default `mostro-cli` from `$PATH` |
 | `MCLI_DIR` | no | The CLI's data dir = the identity used; default `~/.mcli` |
 | `POW`, `TRANSPORT` | no | Passed to the CLI as-is |
@@ -140,7 +140,45 @@ server never reads.
 
 An invalid value stops the server at startup with a message naming it. A
 switch that is neither true nor false is an error, so a typo can never enable
-writes.
+writes. `MOSTRO_PUBKEY` or `RELAYS` set to an empty value is an error too, not
+a fallback to the default: unset the variable to use the default. The startup
+log names the node in use and whether the node and the relays came from the
+catalog or from the environment.
+
+### Nodes
+
+The server knows the trusted Mostro nodes: Mostro Global, the default, and the
+regional nodes listed at [mostro.community](https://mostro.community). Each
+node's relays are the relay list it publishes.
+
+| Id | Node | Public key |
+|---|---|---|
+| `global` | Mostro Global (default) | `82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390` |
+| `cuba` | Kmbalache | `00000235a3e904cfe1213a8a54d6f1ec1bef7cc6bfaabd6193e82931ccf1366a` |
+| `spain` | NostroMostro | `0000cc02101ec29eea9ce623258752b9d7da66c27845ed26846dd0b0fc736b40` |
+| `colombia` | MostroColomBia | `00000978acc594c506976c655b6decbf2d4af25ffdaa6680f2a9568b0a88441b` |
+| `bolivia` | Mostro Boliviano | `00007cb3305fb972f5cc83f83a8fbca1e64e93c9d1369880a9fd62ef95d23f91` |
+| `venezuela` | Mostro Venezuela | `000009ee1e4b1dc7add19ab30e4ef854d7b562e208b62686fd9002b50b24dabb` |
+| `brazil` | Mostro Brasil | `00037abd44e7a846689e230d5446abcd0d56a344fa81fff85c09d1929feda486` |
+| `argentina` | MostrAR | `b3626fe91b602bdbca3673bec0855221f41dc8f6d0e4027e51eaa525d68d87f2` |
+| `europe` | MostroEuropa | `da23a31d75572138ab8149911a04224812a34bda679caba7cb1824fdf7c592ec` |
+| `ecuador` | BitMaxis - Ecuador | `001bd4747d7d265edfe3bd3b7299886146ad850d51095fe77b763c32015685b9` |
+| `mexico` | Mostro México | `00003f6be51b51a1a0cf9c94232ab1bba1f5c1bfd5a0e8687e9647558536b791` |
+
+- **Default.** With neither variable set, the server trades on Mostro Global
+  with its relays.
+- **Another node at startup.** Set `MOSTRO_PUBKEY` (and `RELAYS`, unless the
+  node is in the catalog). This is also how to use a node outside the catalog,
+  such as the regtest node.
+- **Another node on request.** Ask the agent ("use the Argentina node"): it
+  calls `list_nodes` and `select_node`. The switch lasts until the server
+  restarts, accepts catalog nodes only, and is refused while mostro-cli's local
+  store lists open orders, since a trade can only be finished on its own node.
+
+The catalog lives in `src/nodes.rs` and changes only through a pull request: a
+node list a remote page could change is a node list an attacker could change.
+When a node's key or relays change, update `src/nodes.rs` and this table
+together.
 
 ## Connecting an MCP client
 
@@ -148,7 +186,6 @@ The server speaks MCP over stdio. Claude Code:
 
 ```bash
 claude mcp add mostro \
-  -e MOSTRO_PUBKEY=<node pubkey> -e RELAYS=wss://relay.mostro.network \
   -e MOSTRO_CLI_PATH=/path/to/mostro-cli \
   -- /path/to/mostro-mcp
 ```
@@ -161,14 +198,15 @@ Any host that takes the usual JSON configuration:
     "mostro": {
       "command": "/path/to/mostro-mcp",
       "env": {
-        "MOSTRO_PUBKEY": "<node pubkey>",
-        "RELAYS": "wss://relay.mostro.network",
         "MOSTRO_CLI_PATH": "/path/to/mostro-cli"
       }
     }
   }
 }
 ```
+
+Both use Mostro Global. To start on another node, add `MOSTRO_PUBKEY` (and
+`RELAYS` for a node outside the catalog).
 
 `examples/mcp_call.rs` is a minimal client for trying it by hand:
 
@@ -189,6 +227,8 @@ and pay fiat; taking a `buy` order means you *sell* sats and pay a hold invoice.
 | `create_order` | no | `order new` | `kind`, `fiat_code`, `fiat_amount` **or** `fiat_amount_min`+`fiat_amount_max`, `payment_method`, `amount_sats?` (omit = market price), `premium?` (above -100 %), `invoice?` (buy only), `expiration_days?` |
 | `take_order` | no | `order take-sell` / `order take-buy` | `order_id`, `order_kind` (the order's side, never guessed), `fiat_amount?` (range orders), `invoice?` (taking a sell only) |
 | `list_my_orders` | yes | `order mine` | none. Local store only, no network |
+| `list_nodes` | yes | none | none. The trusted node catalog and the node in use |
+| `select_node` | no | `order mine` (to check for open orders) | `node` (a catalog id), `leave_open_orders?` (only after the user confirmed those orders are finished). Not behind the write gate: it changes no order |
 | `list_messages` | yes | `message list` | `order_id?`, `since_minutes?` (1 to 10080, default 30) |
 | `add_invoice` | no | `order add-invoice` | `order_id`, `invoice` (BOLT11 or Lightning address, for the sats you buy) |
 | `add_bond_invoice` | no | `bond add-invoice` | `order_id`, `invoice` (BOLT11 for exactly your share of a slashed bond) |
