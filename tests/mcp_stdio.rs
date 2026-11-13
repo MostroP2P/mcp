@@ -739,7 +739,8 @@ async fn the_cli_s_rating_outcomes_reach_the_agent_intact() {
     let body = text(&uncertain);
     assert!(body.starts_with("UNCERTAIN RATING"), "{body}");
     assert!(
-        body.contains("Never call rate_counterparty again for this order"),
+        body.contains("Never call rate_counterparty again for this order and side")
+            && body.contains("may have been sent, but whether it was recorded is unknown"),
         "{body}"
     );
     client.cancel().await.unwrap();

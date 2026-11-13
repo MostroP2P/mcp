@@ -250,11 +250,15 @@ whether a rating exists cannot be known. The node gives no answer to a side
 that already rated, when the counterparty trades in full privacy, for an order
 that was never taken (it cannot name both parties) and on internal failures,
 one of which comes after the rating is stored. An `uncertain` rating, a
-timeout or unreadable output of the CLI is headed by the rating's own warning,
-not the generic one: never call `rate_counterparty` again for that order, and
-tell the user it was sent and its outcome is unknown. `get_order` does not show
-ratings; a `rate-received` message for the order in `list_messages` confirms
-one, but its absence proves nothing.
+timeout, unreadable output, or a CLI that started and then failed is headed by
+the rating's own warning, not the generic one: never call `rate_counterparty`
+again for that order and side, and tell the user the rating may have been sent,
+but whether it was recorded is unknown. A CLI that could not start sent nothing
+and is a plain error. `get_order` does not show ratings; a `rate-received`
+message for the order in `list_messages` confirms one, but its absence proves
+nothing. The server passes every node and chat record through as the CLI
+returns it; telling records already handled from new ones (node messages by
+`event_id`, chat messages by `message_id`) is the agent's.
 
 Like every request it sends, mostro-cli 0.17.1 mines the larger of `POW` and the
 difficulty the node advertises (for a rating, the first-contact one), on its own

@@ -34,6 +34,12 @@ pub enum Error {
     #[error("could not run mostro-cli: {0}")]
     Io(#[from] std::io::Error),
 
+    /// mostro-cli started, then capturing, reading or waiting for it failed:
+    /// unlike [`Error::Io`], it may have sent its request. Same text, so a
+    /// tool that does not tell the two apart reads as before.
+    #[error("could not run mostro-cli: {0}")]
+    IoAfterStart(std::io::Error),
+
     #[error(
         "mostro-cli does not offer JSON output for: {}. Install a mostro-cli whose \
          `mostro-cli --output json schema` lists these commands",

@@ -137,7 +137,7 @@ impl CliRunner for MostroCliBackend {
             _ => Error::Io(e),
         })?;
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            return Err(Error::Io(std::io::Error::other(
+            return Err(Error::IoAfterStart(std::io::Error::other(
                 "mostro-cli output was not captured",
             )));
         };
@@ -152,7 +152,8 @@ impl CliRunner for MostroCliBackend {
         let limit = self.timeout.saturating_add(extra);
         let (stdout, stderr, status) = tokio::time::timeout(limit, finished)
             .await
-            .map_err(|_| Error::Timeout(limit))??;
+            .map_err(|_| Error::Timeout(limit))?
+            .map_err(Error::IoAfterStart)?;
         Ok(CliRun {
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: clean(&stderr),
@@ -365,6 +366,19 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, Error::CliNotFound(path) if path.contains("/nonexistent")));
+    }
+
+    #[tokio::test]
+    async fn a_cli_that_cannot_start_is_a_spawn_failure_not_a_failure_after_start() {
+        // Present but not executable: `spawn` itself fails, nothing ran.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mostro-cli");
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        let err = backend(path, Duration::from_secs(1))
+            .run(vec![])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "{err:?}");
     }
 
     #[tokio::test]

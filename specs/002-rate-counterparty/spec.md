@@ -44,8 +44,9 @@ standalone module, conservative annotations and no extra confirmation parameter.
 - **FR-003**: The description and the instructions say the rating is the user's choice, never the agent's, never sent unasked; one
   rating per side per order, final; who may rate when, from the order's status and without waiting for a `rate` message; what each
   outcome proves (`ok` recorded, `error` nothing recorded, `uncertain` unknown, with the silent cases); after an `uncertain` rating,
-  a timeout or unreadable output, never call `rate_counterparty` again for that order, under a warning of its own (the generic one
-  says to check the state, which no tool can for a rating); `get_order` does not show ratings and `rate-received` in
+  a timeout, unreadable output or a CLI that started and then failed (`Error::IoAfterStart`), never call `rate_counterparty` again
+  for that order and side, and say the rating may have been sent but whether it was recorded is unknown, under a warning of its own
+  (the generic one says to check the state, which no tool can for a rating); a CLI that never started sent nothing; `get_order` does not show ratings and `rate-received` in
   `list_messages` confirms one, its absence proving nothing.
 - **FR-004**: `contract::WRITE` requires `order.rate`.
 - **FR-005**: `list_messages` and `watch_order` give the same message rules: the `next_step` values of the findings, each step's
@@ -63,3 +64,5 @@ standalone module, conservative annotations and no extra confirmation parameter.
 - [x] **3. Second review pass.** (2026-11-12) `event_id` for node messages, `message_id` for chat; the rating's own uncertain
   warning (`outcome::RATING_UNCERTAIN_WARNING`) on uncertain outcomes, timeouts and unreadable output; rating outcomes checked by
   their structure; regtest tests for an untaken order and a solver's settlement, written, not run.
+- [x] **4. Third review pass.** (2026-11-13) An `uncertain` rating "may have been sent", not "was sent"; a failure after the CLI
+  started (`Error::IoAfterStart`) carries the rating's warning, a spawn failure does not; distinct chat `message_id`s kept.

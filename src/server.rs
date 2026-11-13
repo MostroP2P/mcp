@@ -115,7 +115,7 @@ Every result is the JSON outcome document of mostro-cli: `status` (`ok`, `error`
 `error` and `warnings`. An `uncertain` result means the request may have reached the \
 node: never retry it on your own, check the state first (get_order, list_my_orders, \
 list_messages). A rating is the exception: no tool shows it, so after an uncertain \
-rating never call rate_counterparty again for that order.
+rating never call rate_counterparty again for that order and side.
 
 The mostro-cli book describes these documents: https://mostro.network/mostro-cli-book/ \
 (error codes: errors.html; `next_step` and node actions: reference/actions.html; \
@@ -453,9 +453,9 @@ impl<R: CliRunner> MostroServer<R> {
             and on internal failures, one of them after the rating is stored. \
             `uncertain` with `pow_required`: the node most likely dropped it for too \
             little proof of work (POW under `error.required`), but that is not proven. \
-            After any `uncertain`, never call rate_counterparty again for this order: \
-            tell the user it was sent and its outcome is unknown. get_order does not \
-            show ratings; a \
+            After any `uncertain`, never call rate_counterparty again for this order \
+            and side: tell the user the rating may have been sent, but whether it was \
+            recorded is unknown. get_order does not show ratings; a \
             `rate-received` message for the order in list_messages confirms one, and \
             its absence proves nothing.",
         annotations(
@@ -562,6 +562,15 @@ impl<R: CliRunner> MostroServer<R> {
                             "mostro-cli did not finish within {limit:?} \
                              (MOSTRO_MCP_COMMAND_TIMEOUT_SECS) and was stopped after it \
                              may have sent the rating."
+                        ),
+                    ),
+                    // Started, then lost: the rating may have gone out. A spawn
+                    // failure (`Io`, `CliNotFound`) sent nothing and stays plain.
+                    (Reach::Rating, Error::IoAfterStart(cause)) => warned_error(
+                        RATING_UNCERTAIN_WARNING,
+                        &format!(
+                            "mostro-cli started, then failed ({cause}): it may have sent \
+                             the rating."
                         ),
                     ),
                     _ => tool_error(&error),

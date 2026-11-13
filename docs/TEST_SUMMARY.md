@@ -242,3 +242,23 @@ On top of `upstream/main` `8f8ad46`, merged with no conflicts (release workflow 
   watch_order failed one. All restored.
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 143 + 17 passed (10 regtest ignored), build, `git diff --check`. Not run: the
   regtest and a real mostro-cli binary.
+
+## Follow-up: Third Review Pass On Rating (PR #16): 2026-11-13
+
+On top of `upstream/main` `3966bae` (AGENTS.md), merged with no conflicts. From the CodeRabbit review of `a1fc799`.
+
+- **Wording**: an `uncertain` rating does not prove publication (`request_rejected` has publication `unknown`). The rating's
+  warning, the tool description, the README and spec 002 now say the rating may have been sent, but whether it was recorded is
+  unknown, and never to call `rate_counterparty` again for that order and side. Tests also check that "it was sent and" is gone.
+- **Failure after start**: `run_waiting` returned `Error::Io` both for a failed `spawn` and for a failure after the CLI started
+  (output not captured, a read, `wait`). The latter is now `Error::IoAfterStart`, with the same text. For a rating it carries the
+  rating's warning; a spawn failure (`Io`, `CliNotFound`) stays a plain error, since nothing was sent. Every other tool shows the same
+  text as before. Tests: the server for both kinds and for two other tools; the backend for a non-executable CLI (`Io`). Not tested:
+  the backend's mapping of a real read or wait failure, which cannot be induced here.
+- **Chat records**: the chat-read test also checks that distinct `message_id`s stay distinct records. The README says the server
+  passes records through and leaves telling them apart to the agent.
+- **Mutation checks**: dropping the rating's after-start arm failed one test; the old wording failed five; classifying a spawn
+  failure as after-start failed the backend test. All restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 147 + 17 passed (10 regtest ignored), `cargo build`, `cargo build --release`,
+  `git diff --check`. Not run: the Windows check of AGENTS.md (target not installed; no Unix API added), the regtest (no Docker
+  daemon), a real mostro-cli binary.

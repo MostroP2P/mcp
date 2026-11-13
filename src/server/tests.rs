@@ -666,7 +666,8 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
         "success",
         "a `rate` message is not needed",
         "MOSTRO_MCP_ALLOW_WRITES=true",
-        "never call rate_counterparty again for this order",
+        "never call rate_counterparty again for this order and side",
+        "may have been sent, but whether it was recorded is unknown",
         "cannot be known",
         "never taken",
         "full privacy",
@@ -679,7 +680,11 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
     }
     // Claims the node contradicts: an untaken order gets silence, not a
     // refusal, and some silences mean nothing can have been recorded.
-    for wrong in ["Otherwise the node refuses", "the rating may be recorded"] {
+    for wrong in [
+        "Otherwise the node refuses",
+        "the rating may be recorded",
+        "it was sent and its outcome is unknown",
+    ] {
         assert!(!description.contains(wrong), "{wrong}: {description}");
     }
 }
@@ -763,14 +768,19 @@ fn assert_rating_warning(body: &str) {
         "not the generic advice: {body}"
     );
     for needle in [
-        "Never call rate_counterparty again for this order",
-        "unknown",
+        "may have been sent, but whether it was recorded is unknown",
+        "Never call rate_counterparty again for this order and side",
         "get_order does not show ratings",
         "a missing `rate-received`",
         "only what is known",
     ] {
         assert!(RATING_UNCERTAIN_WARNING.contains(needle), "{needle}");
     }
+    // An uncertain result does not prove the rating was published.
+    assert!(
+        !RATING_UNCERTAIN_WARNING.contains("it was sent and"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -841,6 +851,53 @@ async fn a_timed_out_rating_gets_the_ratings_warning_and_a_timed_out_read_none()
     let body = text_of(&read);
     assert!(body.contains("did not finish within 60s"), "{body}");
     assert!(!body.starts_with("UNCERTAIN"), "{body}");
+}
+
+#[tokio::test]
+async fn a_rating_whose_cli_failed_after_starting_gets_the_ratings_warning() {
+    let cli = Arc::new(FakeCli::answering(|| {
+        Err(Error::IoAfterStart(std::io::Error::other("broken pipe")))
+    }));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let result = server.rate_counterparty(Parameters(rating(5))).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(result.structured_content.is_none(), "no document came");
+    let body = text_of(&result);
+    assert_rating_warning(&body);
+    assert!(body.contains("broken pipe"), "{body}");
+}
+
+#[tokio::test]
+async fn a_rating_whose_cli_never_started_says_nothing_was_sent() {
+    for spawn_failure in [
+        || Err(Error::Io(std::io::Error::other("permission denied"))),
+        || Err(Error::CliNotFound("/x/mostro-cli".into())),
+    ] as [fn() -> MostroResult<CliRun>; 2]
+    {
+        let cli = Arc::new(FakeCli::answering(spawn_failure));
+        let server = MostroServer::new(Arc::clone(&cli), true);
+        let result = server.rate_counterparty(Parameters(rating(5))).await;
+        assert_eq!(result.is_error, Some(true));
+        let body = text_of(&result);
+        assert!(!body.starts_with("UNCERTAIN"), "{body}");
+        assert!(body.contains("mostro-cli"), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn other_tools_keep_their_errors_when_the_cli_fails_after_starting() {
+    let cli = Arc::new(FakeCli::answering(|| {
+        Err(Error::IoAfterStart(std::io::Error::other("broken pipe")))
+    }));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let sent = server.fiat_sent(Parameters(step())).await;
+    let listed = server
+        .list_orders(Parameters(ListOrdersParams::default()))
+        .await;
+    for result in [sent, listed] {
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(text_of(&result), "could not run mostro-cli: broken pipe");
+    }
 }
 
 #[tokio::test]
@@ -919,6 +976,9 @@ async fn a_chat_read_keeps_every_message() {
         .map(|m| m["message_id"].as_str().unwrap().to_string())
         .collect();
     assert!(ids.len() > 1, "{ids:?}");
+    // Each chat message is its own record: distinct ids, none merged away.
+    let distinct: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(distinct.len(), ids.len(), "{ids:?}");
 }
 
 #[test]

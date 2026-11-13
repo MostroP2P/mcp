@@ -22,11 +22,11 @@ Do NOT retry it. Check the current state first (get_order, list_messages), then 
 
 /// The same for a rating, which is one-time and which no tool can read back:
 /// checking the state settles nothing, so the generic advice does not apply.
-pub const RATING_UNCERTAIN_WARNING: &str = "UNCERTAIN RATING: the rating may have \
-reached the node, and whether it was recorded is unknown. Never call rate_counterparty \
-again for this order. get_order does not show ratings, and a missing `rate-received` \
-message does not prove the rating failed. Tell the user only what is known: it was \
-sent and its outcome is unknown.";
+pub const RATING_UNCERTAIN_WARNING: &str = "UNCERTAIN RATING: the rating may have been \
+sent, but whether it was recorded is unknown. Never call rate_counterparty again for \
+this order and side. get_order does not show ratings, and a missing `rate-received` \
+message does not prove the rating failed. Tell the user only what is known: the rating \
+may have been sent, but whether it was recorded is unknown.";
 
 /// A short, cleaned excerpt of output that is not an outcome document, for an
 /// error message.
