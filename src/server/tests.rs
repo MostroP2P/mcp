@@ -1001,6 +1001,43 @@ fn the_instructions_end_a_trade_with_the_users_own_rating() {
     assert!(!INSTRUCTIONS.contains("no reason to rate"));
 }
 
+/// What proves the exact rating, and what does not. The server passes the
+/// CLI's result on and checks no acknowledgement itself.
+const EXACT_MATCH_RULE: [&str; 5] = [
+    "Only rate_counterparty's `ok` proves the exact rating",
+    "a `rate-received` for the same order carrying the same rating",
+    "this server passes that result on and checks nothing itself",
+    "without the score",
+    "A missing acknowledgement, a missing rating payload or a mismatched rating confirms nothing",
+];
+
+/// The blanket claims the exact-match rule replaces.
+const ANY_ACK_CONFIRMS: [&str; 2] = [
+    "a `rate-received` message in list_messages confirms a rating",
+    "`rate-received` message for the order in list_messages confirms one",
+];
+
+#[test]
+fn the_instructions_say_only_an_exact_acknowledgement_confirms_a_rating() {
+    for needle in EXACT_MATCH_RULE {
+        assert!(INSTRUCTIONS.contains(needle), "{needle}");
+    }
+    for wrong in ANY_ACK_CONFIRMS {
+        assert!(!INSTRUCTIONS.contains(wrong), "{wrong}");
+    }
+}
+
+#[test]
+fn the_rating_description_says_only_an_exact_acknowledgement_confirms_it() {
+    let description = description_of("rate_counterparty");
+    for needle in EXACT_MATCH_RULE {
+        assert!(description.contains(needle), "{needle}: {description}");
+    }
+    for wrong in ANY_ACK_CONFIRMS {
+        assert!(!description.contains(wrong), "{wrong}: {description}");
+    }
+}
+
 #[test]
 fn the_instructions_say_how_to_read_any_node_message() {
     for needle in [

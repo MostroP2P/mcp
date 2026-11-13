@@ -96,7 +96,13 @@ settles a dispute (only `admin-settled`), and watch_order can report `ended` \
 before the buyer's arrives. Go by the order's status (get_order): the buyer may \
 rate at `success`, the seller at `settled-hold-invoice` (after the release or \
 a solver's settlement) or `success`. get_order does not show whether a side \
-already rated; a `rate-received` message in list_messages confirms a rating.
+already rated. Only rate_counterparty's `ok` proves the exact rating: mostro-cli \
+accepts as its acknowledgement only a `rate-received` for the same order carrying the \
+same rating, and this server passes that result on and checks nothing itself. A \
+`rate-received` record in list_messages for the order shows that a rating from this \
+side was recorded, but mostro-cli 0.17.1 lists its payload as `other` \
+(`rating_user`), without the score, so it does not show which one. A missing \
+acknowledgement, a missing rating payload or a mismatched rating confirms nothing.
 
 When a trade is stuck (the fiat was sent and the seller does not release, or \
 the counterparty stopped answering), you may suggest a dispute, but the user \
@@ -455,9 +461,14 @@ impl<R: CliRunner> MostroServer<R> {
             little proof of work (POW under `error.required`), but that is not proven. \
             After any `uncertain`, never call rate_counterparty again for this order \
             and side: tell the user the rating may have been sent, but whether it was \
-            recorded is unknown. get_order does not show ratings; a \
-            `rate-received` message for the order in list_messages confirms one, and \
-            its absence proves nothing.",
+            recorded is unknown. get_order does not show ratings. Only \
+            rate_counterparty's `ok` proves the exact rating: mostro-cli accepts only \
+            a `rate-received` for the same order carrying the same rating, and this \
+            server passes that result on and checks nothing itself. A `rate-received` \
+            record in list_messages shows a rating from this side was recorded, \
+            without the score (payload `other`, `rating_user`), so not which one. A \
+            missing acknowledgement, a missing rating payload or a mismatched rating \
+            confirms nothing.",
         annotations(
             title = "Rate counterparty",
             read_only_hint = false,

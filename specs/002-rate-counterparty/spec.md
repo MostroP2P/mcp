@@ -22,8 +22,11 @@ standalone module, conservative annotations and no extra confirmation parameter.
   sends the seller only `admin-settled`. The CLI's watch waits for the buyer's `rate` up to 10 s, never past the deadline, so it can
   report `ended` without it. Eligibility therefore comes from the order's status, not from a `rate` message.
 - The CLI signs with the order's trade key, waits for `rate-received` with the rating it sent, and writes nothing locally. Silence is
-  `uncertain` / `reply_timeout`. No command reads a rating back. `message list` lists every message the node sent to the order's trade
-  key, so a `rate-received` there confirms a rating; its absence proves nothing.
+  `uncertain` / `reply_timeout`. No command reads a rating back. `order rate` accepts only `rate-received` for the same order with
+  `Payload::RatingUser(r)` where `r` is the rating sent (`outcome/rate.rs`), so its `ok` alone proves the exact rating. `message list`
+  lists every message the node sent to the order's trade key, but shows a `RatingUser` payload as `other` / `rating_user` without the
+  score (`outcome/messages/payload.rs`): a `rate-received` there shows a rating was recorded, not which one. A missing
+  acknowledgement, a missing rating payload or a mismatched rating confirms nothing, and the server checks none of it itself.
 - At 0.17.1 every request mines the larger of `POW` and what the node advertises, on its own up to 20 bits (spec `017-advertised-pow`,
   `node_info.rs` `work_to_mine`; a rating uses the first-contact lane); above that it is `pow_required`, nothing sent. When the early
   probe misses, it mines `POW` alone, the node drops the event silently and a late probe makes the timeout `uncertain` /
@@ -46,8 +49,10 @@ standalone module, conservative annotations and no extra confirmation parameter.
   outcome proves (`ok` recorded, `error` nothing recorded, `uncertain` unknown, with the silent cases); after an `uncertain` rating,
   a timeout, unreadable output or a CLI that started and then failed (`Error::IoAfterStart`), never call `rate_counterparty` again
   for that order and side, and say the rating may have been sent but whether it was recorded is unknown, under a warning of its own
-  (the generic one says to check the state, which no tool can for a rating); a CLI that never started sent nothing; `get_order` does not show ratings and `rate-received` in
-  `list_messages` confirms one, its absence proving nothing.
+  (the generic one says to check the state, which no tool can for a rating); a CLI that never started sent nothing; `get_order`
+  does not show ratings; only the tool's `ok` proves the exact rating, and a `rate-received` record in `list_messages` shows a
+  rating was recorded but not which one (a missing acknowledgement, a missing rating payload or a mismatched rating confirms
+  nothing).
 - **FR-004**: `contract::WRITE` requires `order.rate`.
 - **FR-005**: `list_messages` and `watch_order` give the same message rules: the `next_step` values of the findings, each step's
   valid statuses in the instructions, act on each node message (`event_id`) once and read each chat message (`message_id`; chat
@@ -66,3 +71,5 @@ standalone module, conservative annotations and no extra confirmation parameter.
   their structure; regtest tests for an untaken order and a solver's settlement, written, not run.
 - [x] **4. Third review pass.** (2026-11-13) An `uncertain` rating "may have been sent", not "was sent"; a failure after the CLI
   started (`Error::IoAfterStart`) carries the rating's warning, a spawn failure does not; distinct chat `message_id`s kept.
+- [x] **5. Exact acknowledgement.** (2026-11-13) Only the tool's `ok` proves the exact rating (same order, same rating, checked by
+  the CLI); a `rate-received` record in `list_messages` has no score, so it shows a rating was recorded, not which one.

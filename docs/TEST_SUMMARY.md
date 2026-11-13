@@ -262,3 +262,19 @@ On top of `upstream/main` `3966bae` (AGENTS.md), merged with no conflicts. From 
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 147 + 17 passed (10 regtest ignored), `cargo build`, `cargo build --release`,
   `git diff --check`. Not run: the Windows check of AGENTS.md (target not installed; no Unix API added), the regtest (no Docker
   daemon), a real mostro-cli binary.
+
+## Follow-up: Exact Rating Acknowledgement (PR #16): 2026-11-13
+
+From CodeRabbit's review of `96046b3`. mostro-cli `v0.17.1` accepts as the acknowledgement only `rate-received` for the same
+order carrying `Payload::RatingUser(r)` with `r` the rating sent (`outcome/rate.rs`). Its `message list` shows that payload as
+`other` / `rating_user` without the score (`outcome/messages/payload.rs`; the CLI's own test maps `RatingUser(5)` that way).
+
+- **Guidance**: the instructions, the rate_counterparty description, the README and spec 002 now say that only the tool's `ok`
+  proves the exact rating, checked by the CLI, which this server passes on without checking anything itself. A `rate-received`
+  record in list_messages shows a rating from this side was recorded, not which one. A missing acknowledgement, a missing rating
+  payload or a mismatched rating confirms nothing. Code behaviour is unchanged.
+- **Tests**: `the_instructions_say_only_an_exact_acknowledgement_confirms_a_rating` and
+  `the_rating_description_says_only_an_exact_acknowledgement_confirms_it` check the rule and the absence of the old blanket claims.
+  Both were written first and failed. Mutation: putting the old instructions sentence back failed the first; restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 149 + 17 passed (10 regtest ignored), `cargo build`, `cargo build --release`,
+  `git diff --check`. Not run: the regtest (no Docker daemon), the Windows check (target not installed), a real mostro-cli binary.

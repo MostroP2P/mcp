@@ -254,9 +254,14 @@ timeout, unreadable output, or a CLI that started and then failed is headed by
 the rating's own warning, not the generic one: never call `rate_counterparty`
 again for that order and side, and tell the user the rating may have been sent,
 but whether it was recorded is unknown. A CLI that could not start sent nothing
-and is a plain error. `get_order` does not show ratings; a `rate-received`
-message for the order in `list_messages` confirms one, but its absence proves
-nothing. The server passes every node and chat record through as the CLI
+and is a plain error. `get_order` does not show ratings. Only the tool's `ok`
+proves the exact rating: mostro-cli accepts as the acknowledgement only a
+`rate-received` for the same order carrying the same rating, and this server
+passes that result on without checking anything itself. A `rate-received`
+record in `list_messages` for the order shows that a rating from this side was
+recorded, but mostro-cli 0.17.1 lists its payload as `other` (`rating_user`)
+without the score, so it does not show which one. A missing acknowledgement, a
+missing rating payload or a mismatched rating confirms nothing. The server passes every node and chat record through as the CLI
 returns it; telling records already handled from new ones (node messages by
 `event_id`, chat messages by `message_id`) is the agent's.
 
@@ -439,6 +444,7 @@ The log then answers four questions:
   the dispute chat (`disputechat`) and the list of disputes (`listdisputes`)
   only for humans, so this server cannot read or answer the solver. Answer the
   solver with mostro-cli.
-- **A rating cannot be read back.** No command shows whether a side rated an
-  order: only a `rate-received` message in `list_messages` confirms it.
+- **A rating cannot be read back.** No command shows the score a side gave. A
+  `rate-received` record in `list_messages` shows that a rating was recorded,
+  not which one; only `rate_counterparty`'s own `ok` proves the exact rating.
 - **One identity per server process**, the one in `MCLI_DIR`.
