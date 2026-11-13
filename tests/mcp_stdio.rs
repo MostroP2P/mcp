@@ -34,6 +34,7 @@ fn fake_cli(dir: &tempfile::TempDir) -> PathBuf {
         "#!/bin/sh\n\
          here=$(dirname \"$0\")\n\
          if [ \"$2\" = schema ]; then cat \"$here/schema.json\"; exit 0; fi\n\
+         if [ \"$3\" = mine ] && [ -f \"$here/mine.json\" ]; then cat \"$here/mine.json\"; exit 0; fi\n\
          if [ -f \"$here/reply.json\" ]; then cat \"$here/reply.json\"; exit \"$(cat \"$here/reply.code\")\"; fi\n\
          args=''; for a in \"$@\"; do args=\"$args\\\"$a\\\",\"; done\n\
          printf '{\"schema_version\":\"1\",\"command\":\"echo\",\"status\":\"ok\",\"data\":{\"node\":\"%s\",\"relays\":\"%s\",\"admin\":\"%s\",\"other\":\"%s\",\"args\":[%s\"end\"]},\"error\":null,\"warnings\":[],\"meta\":{}}\\n' \\\n\
@@ -108,7 +109,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-async fn a_client_discovers_sixteen_typed_tools() {
+async fn a_client_discovers_eighteen_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -132,6 +133,8 @@ async fn a_client_discovers_sixteen_typed_tools() {
         "watch_order",
         "read_chat",
         "open_dispute",
+        "list_nodes",
+        "select_node",
     ] {
         assert!(
             instructions.contains(reference),
@@ -153,10 +156,12 @@ async fn a_client_discovers_sixteen_typed_tools() {
             "get_order",
             "list_messages",
             "list_my_orders",
+            "list_nodes",
             "list_orders",
             "open_dispute",
             "read_chat",
             "release",
+            "select_node",
             "send_chat",
             "sync_orders",
             "take_order",
@@ -336,7 +341,7 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
         "{}",
         text(&result)
     );
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 18);
     client.cancel().await.unwrap();
 }
 
@@ -415,7 +420,7 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("is not an order id"));
 
     // The server is still serving afterwards.
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 18);
     client.cancel().await.unwrap();
 }
 
@@ -793,5 +798,117 @@ async fn a_server_that_cannot_start_says_why_in_the_log_file() {
     assert!(
         text.contains("MOSTRO_CLI_PATH"),
         "the cause, not just the context: {text}"
+    );
+}
+
+const GLOBAL: &str = "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390";
+const ARGENTINA: &str = "b3626fe91b602bdbca3673bec0855221f41dc8f6d0e4027e51eaa525d68d87f2";
+
+/// The server with no node configured: neither `MOSTRO_PUBKEY` nor `RELAYS`.
+async fn connect_without_node(cli: &Path) -> RunningService<RoleClient, ()> {
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp")).configure(|cmd| {
+            cmd.env_clear().env("MOSTRO_CLI_PATH", cli);
+        }),
+    )
+    .expect("spawn mostro-mcp");
+    ().serve(transport).await.expect("MCP handshake")
+}
+
+/// Make the fake CLI answer `order mine` with the fixture `name`.
+fn mine_answers(dir: &tempfile::TempDir, name: &str) {
+    let outcomes: Value = serde_json::from_str(OUTCOMES).unwrap();
+    std::fs::write(
+        dir.path().join("mine.json"),
+        outcomes[name]["stdout"].to_string(),
+    )
+    .unwrap();
+}
+
+fn echoed_node(result: &CallToolResult) -> (String, String) {
+    let data = &result.structured_content.as_ref().expect("a document")["data"];
+    (
+        data["node"].as_str().unwrap().to_string(),
+        data["relays"].as_str().unwrap().to_string(),
+    )
+}
+
+#[tokio::test]
+async fn with_no_node_configured_the_cli_runs_against_mostro_global() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = connect_without_node(&fake_cli(&dir)).await;
+
+    let result = call(&client, "list_orders", json!({})).await;
+    assert_eq!(
+        echoed_node(&result),
+        (
+            GLOBAL.to_string(),
+            "wss://relay.mostro.network,wss://mostro-p2p.tech,wss://relay.shadowbip.com"
+                .to_string()
+        )
+    );
+    let listed = call(&client, "list_nodes", json!({})).await;
+    assert_eq!(
+        listed.structured_content.unwrap()["current"]["id"],
+        "global"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn after_select_node_every_run_goes_to_the_selected_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    mine_answers(&dir, "list_empty");
+    let client = connect_without_node(&cli).await;
+
+    let selected = call(&client, "select_node", json!({"node": "argentina"})).await;
+    assert_ne!(selected.is_error, Some(true), "{}", text(&selected));
+
+    let (node, relays) = echoed_node(&call(&client, "list_orders", json!({})).await);
+    assert_eq!(node, ARGENTINA);
+    assert!(
+        relays.starts_with("wss://relay.mostro.network,"),
+        "{relays}"
+    );
+    let listed = call(&client, "list_nodes", json!({})).await;
+    assert_eq!(
+        listed.structured_content.unwrap()["current"]["id"],
+        "argentina"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn select_node_with_open_orders_is_refused_and_the_node_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    mine_answers(&dir, "mine_newest_first");
+    let client = connect_without_node(&cli).await;
+
+    let refused = call(&client, "select_node", json!({"node": "argentina"})).await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(text(&refused).contains("open orders"), "{}", text(&refused));
+    let (node, _) = echoed_node(&call(&client, "list_orders", json!({})).await);
+    assert_eq!(node, GLOBAL);
+    client.cancel().await.unwrap();
+}
+
+#[test]
+fn an_explicitly_empty_node_stops_the_server_with_a_clear_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mostro-mcp"))
+        .env_clear()
+        .env("MOSTRO_CLI_PATH", fake_cli(&dir))
+        .env("MOSTRO_PUBKEY", "")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "stdout is the MCP protocol");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("MOSTRO_PUBKEY is set but empty"),
+        "{stderr}"
     );
 }

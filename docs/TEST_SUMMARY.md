@@ -154,3 +154,30 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 123 + 16 passed (8 regtest ignored), build. Also seen: one run of
   `a_run_given_extra_time_outlasts_the_base_timeout_and_no_more` failed under load and passed three times on its own. It is a timing
   test this change does not touch.
+
+## Follow-up: Mostro Global By Default And Trusted Nodes (Issue #11): 2026-11-13
+
+- **Catalog**: `src/nodes.rs` holds Mostro Global and the ten nodes listed at mostro.community (`MostroP2P/community`,
+  `src/config/communities.ts`). Each node's relays are the relay list it publishes (kind 10002), read on 2026-11-13 from
+  `wss://relay.mostro.network` with `nak`, with that relay first. The names come from each node's info event (kind 38385). Every node
+  answered `mostro-cli order list` (0.17.1) through `wss://relay.mostro.network` the same day.
+- **Configuration**: with `MOSTRO_PUBKEY` and `RELAYS` unset the server uses Mostro Global and its relays; each variable overrides
+  independently; an unset `RELAYS` takes a catalog node's relays and is required for a node outside the catalog; a variable set to an
+  empty or blank value is an error, not a default. The startup log names the node and the source of the node and of the relays.
+- **Tools**: `list_nodes` (read-only, runs nothing) and `select_node` (catalog ids only, refused before any run otherwise; reads
+  `order mine` and refuses while any order is not finished, or when the store cannot be read; `leave_open_orders=true` skips the check
+  after the user confirms). Not behind the write gate: it changes no order. The selection is shared with the CLI backend, so every
+  later run gets the new `MOSTRO_PUBKEY` and `RELAYS`. A server-side lock makes the open-order check and the switch one step: runs in
+  flight finish on the old node first and calls that arrive later run on the new one (found by the review: the check and the switch were
+  separate). Selecting the node already in use checks nothing.
+- **Tests**: written first and run red for the configuration and the server tools. Unit: the catalog (ids, Global's exact key and
+  relays, hex keys, the Mostro relay first, unique ids and keys), lookups by id and by hex or npub, the bech32 checksum, open versus
+  finished statuses, the configuration defaults and overrides, and the backend handing the selected node to the next command. Server:
+  `list_nodes` runs no CLI, an unknown node is refused without a run, a switch with no open orders, a refusal that names the open orders,
+  a refusal when the store is unreadable, `leave_open_orders`, and a no-op switch. The lock itself has no test. Stdio: eighteen tools, the CLI run against Mostro Global with nothing
+  configured, every run after `select_node` going to the selected node, a refused switch keeping the node, and an empty `MOSTRO_PUBKEY`
+  stopping the server with nothing on stdout.
+- **Live check** (mainnet, read-only, mostro-cli 0.17.1, a temporary `MCLI_DIR`): with no node configured, `list_orders` returned
+  Mostro Global's USD book and the log showed `node_source=Default relays_source=Default`. `select_node` against a live node was not run:
+  `examples/mcp_call.rs` makes one call per process, so the switch is covered by the stdio tests only. No regtest run: the change does
+  not alter what any command sends to a node.
