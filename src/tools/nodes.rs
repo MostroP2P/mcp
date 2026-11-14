@@ -21,14 +21,15 @@ pub struct SelectNodeParams {
 }
 
 /// The catalog node `params` names; anything else is refused before any run.
+/// The refusal does not repeat the value: a key pasted by mistake (an `nsec`,
+/// or a hex secret that looks like any public key) must not come back out.
 pub fn target(params: &SelectNodeParams) -> Result<&'static TrustedNode> {
     by_id(&params.node).ok_or_else(|| {
         let known: Vec<_> = CATALOG.iter().map(|node| node.id).collect();
         invalid(
             "node",
             format!(
-                "`{}` is not a trusted node; use one of: {}",
-                params.node.trim(),
+                "not a trusted node identifier; use one of: {}",
                 known.join(", ")
             ),
         )
@@ -126,6 +127,17 @@ mod tests {
         assert!(error.contains("not a trusted node"), "{error}");
         assert!(error.contains("global"), "{error}");
         assert!(target(&params("")).is_err());
+    }
+
+    #[test]
+    fn a_rejected_identifier_is_not_echoed_so_a_pasted_key_cannot_leak() {
+        let nsec = format!("nsec1{}", "q".repeat(58));
+        let hex = "cd".repeat(32);
+        for secret in [nsec.as_str(), hex.as_str()] {
+            let error = target(&params(secret)).unwrap_err().to_string();
+            assert!(!error.contains(secret), "{error}");
+            assert!(error.contains("global"), "{error}");
+        }
     }
 
     #[test]
