@@ -839,3 +839,30 @@ async fn no_tool_runs_between_the_open_order_check_and_the_switch() {
     let global = crate::nodes::default_node().pubkey;
     assert_eq!(*cli.ran_on.lock().unwrap(), [global, mexico]);
 }
+
+#[tokio::test]
+async fn refusals_before_any_run_name_the_node_in_use_after_a_switch() {
+    let (server, cli) = server(false);
+    server.select_node(select("argentina", false)).await;
+    let runs = cli.calls.lock().unwrap().len();
+
+    let refused_write = server.cancel(Parameters(step())).await;
+    let invalid_read = server
+        .get_order(Parameters(GetOrderParams {
+            order_id: "nope".into(),
+        }))
+        .await;
+    for result in [refused_write, invalid_read] {
+        assert_eq!(result.is_error, Some(true));
+        let last = result
+            .content
+            .last()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        assert!(last.contains("MostrAR (`argentina`"), "{last}");
+    }
+    assert_eq!(cli.calls.lock().unwrap().len(), runs, "nothing ran");
+}

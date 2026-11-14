@@ -174,8 +174,8 @@ node's relays are the relay list it publishes.
   calls `list_nodes` and `select_node`. The switch lasts until the server
   restarts, accepts catalog nodes only, and is refused while mostro-cli's local
   store lists open orders, since a trade can only be finished on its own node.
-  After a switch, every tool result ends with a text block naming the node it
-  ran against; the first block is still the CLI's document.
+  After a switch, every tool result, refusals included, ends with a text block
+  naming the node in use; the first block is still the CLI's document.
 
 The catalog lives in `src/nodes.rs` and changes only through a pull request: a
 node list a remote page could change is a node list an attacker could change.
