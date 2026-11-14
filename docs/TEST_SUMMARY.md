@@ -154,3 +154,219 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
 - **Gates**: fmt, clippy `-D warnings`, `cargo test` 123 + 16 passed (8 regtest ignored), build. Also seen: one run of
   `a_run_given_extra_time_outlasts_the_base_timeout_and_no_more` failed under load and passed three times on its own. It is a timing
   test this change does not touch.
+
+## Follow-up: Rating The Counterparty (Issue #10): 2026-11-12
+
+[Spec 002](../specs/002-rate-counterparty/spec.md). Native Linux, cargo 1.97, on top of `main` `0e01da4`.
+
+- **Tool** (`src/tools/rate_counterparty.rs`, `server.rs`): `rate_counterparty` runs `order rate --order=<uuid> --rating=<1-5> --yes`
+  behind the write gate; a timeout or unreadable output carries the no-retry warning. Annotations: not read-only, not destructive, not
+  idempotent, open world. `contract::WRITE` requires `order.rate`. The descriptions of `rate_counterparty` and `list_messages` and the
+  instructions are updated (the user's own rating; the `next_step` values of mostro-cli 0.17.1, read from its source at the tag).
+- **Fixtures**: the four `order.rate` examples of spec `014-order-rate` at `v0.17.1`. Before they were added, `refresh.py` reproduced
+  the current `outcomes.json` byte for byte (the `schema` input taken from the current fixture).
+- **Tests**: written first and run red: the unit tests on a `todo!()` (4 panicked; the typed-deserialization test passed, as `u8`
+  already refuses those values), the server tests (no `rate_counterparty` method), the stdio tests (6 failed: unknown tool, sixteen
+  tools). Unit: the exact argv, a lowercased id, 1 and 5 accepted, 0, 6 and 255 refused, a bad id, -1 / 256 / 4.5 / "5" refused by
+  the type. Server: refused by default without spawning, runs `order rate`, the annotations and description, the CLI's document passed
+  through unchanged, out-of-range and bad-id refusals that spawn nothing, a refusal keeping `invalid_order_status` without the warning,
+  a warned `uncertain` and timeout while a timed-out read is not warned, the instructions, the `list_messages` description. Contract:
+  `order.rate` required with writes on only. Stdio: discovery of seventeen tools and the `rate_counterparty` schema, the whole-trade
+  argv, bad ratings refused before the CLI runs, and the rated, refused and uncertain documents reaching the agent.
+- **Mutation spot checks**: accepting 0 (`0..=5`) failed two unit tests and the stdio whole-trade test; removing `order.rate` from
+  `WRITE` failed the contract test; running the tool as a local write failed the warned-timeout test. All restored, tests green.
+- **Regtest**: `both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused` is written and **not run** (no Docker daemon in
+  this environment). The real CLI was not run either.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 135 + 17 passed (9 regtest ignored), build, `git diff --check`.
+- **Review fixes (2026-11-12)**: the `rating` schema advertised `minimum` 0 and `maximum` 255 (a plain `u8`), against the 1-to-5 rule;
+  it now carries `#[schemars(range(min = 1, max = 5))]`, so it advertises 1 and 5 (seen in `tools/list` of the built binary). The
+  stdio discovery test asserts both bounds; it failed first on `minimum` 0, and with `max = 6` or without `min` it failed again
+  (restored). The description now gives `reply_timeout` as one example of `uncertain`, not the only one. Gates: fmt, clippy
+  `-D warnings`, `cargo test` 135 + 17 passed (9 regtest ignored), build, `git diff --check`. The regtest and the real CLI were still
+  not run.
+
+## Follow-up: Review Fixes For Rating (PR #16): 2026-11-12
+
+Static review by the maintainer, checked here against mostrod `v0.20.2` and mostro-cli `v0.17.1` source.
+
+- **Guidance** (`server.rs`): the instructions now hold one set of message rules for list_messages and watch_order, and both
+  descriptions repeat them. A watch's first call replays 30 minutes, so each `event_id` is acted on once. Each step has its own valid
+  statuses: `add_invoice` in `waiting-buyer-invoice`, and in `settled-hold-invoice` after a failed payout (`add_invoice.rs:83`);
+  `fiat_sent` only while `active`; `release` only while `fiat-sent` and on the user's word. A null or unknown `next_step` is read
+  from `action` (`cooperative-cancel-initiated-by-peer` has none). Rating goes by the order's status, not a `rate` message: a
+  solver's settlement sends the seller only `admin-settled`, and a watch can end before the buyer's `rate` (10 s grace, cut at the
+  deadline). The rate_counterparty outcomes say what each one proves. An untaken order is silent, not `invalid_order_status`
+  (`prepare_variables_for_vote`, internal errors only logged). A full-privacy counterparty is silent with nothing recorded, and a
+  failed rating event after the commit is silent with the rating stored. A missed PoW probe ends `uncertain` / `pow_required`.
+  README, spec 002 and the fixtures README are corrected to match: PoW is `max(POW, advertised)`, and the `proposed` caveat is
+  dropped because all 16 v0.17.1 example files are `proposed`.
+- **`rating` of `5.0`**: reproduced first: rmcp refused it ("invalid type: floating point"). `rating` now reads a whole number written
+  as an integer or a float with no fraction. Its schema stays integer 1 to 5. `5.5`, `"5"`, `256.0` and negatives are refused, and
+  `0.0` / `6.0` are refused by the 1-to-5 check. Seen on the built binary with a logging stand-in CLI: `5.0` ran `--rating=5`, and the
+  refused calls started no CLI. Other integer parameters of the server are unchanged.
+- **Tests**: written red first (five unit tests and the stdio whole-trade test). The `!required(false).contains("order.rate")`
+  assertion was vacuous next to the `assert_eq` on `required(false)` and is removed, so the earlier "required with writes on only"
+  entry rested on that `assert_eq`. The duplicated stdio rating test became two table rows. The regtest's copy of the end of
+  `trade()` is now a shared `until_success`; it compiles, and was not run.
+- **Mutation checks**: accepting fractions, dropping the whole-number reader, dropping `order.rate` from `WRITE`, moving it to `READ`,
+  and dropping the `event_id` rule from watch_order each failed a test. All restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 137 + 16 passed (9 regtest ignored), build, `git diff --check`. Not run: the
+  regtest (no Docker daemon here) and a real mostro-cli binary. No test covers a seller rating after a solver's settlement on a node.
+
+## Follow-up: Second Review Pass On Rating (PR #16): 2026-11-12
+
+On top of `upstream/main` `8f8ad46`, merged with no conflicts (release workflow and install docs). Checked against mostro-cli
+`v0.17.1` and mostrod `v0.20.2` source.
+
+- **Message ids**: chat records carry `message_id` and no `event_id` (CLI `outcome/chat.rs`), yet the instructions said to act on
+  each watch record by `event_id`. Now node messages go by `event_id` and chat messages by `message_id`, in the instructions, the
+  watch_order description, the README and spec 002, and skipping a seen record never skips a newer one. Tests: a watch result and a
+  chat read keep the CLI's document whole (every record, with its own id kind), and the descriptions name both ids.
+- **Rating uncertainty**: the generic warning ("check the current state, then decide") and the generic timeout text ("do not retry
+  before checking get_order") invite a retry that a rating cannot justify. `rate_counterparty` now uses its own warning
+  (`outcome::RATING_UNCERTAIN_WARNING`): never call it again for that order, get_order does not show ratings, a missing
+  `rate-received` proves nothing, report only that the outcome is unknown. It applies to the CLI's `uncertain` outcomes (the
+  document unchanged), a timeout and unreadable output. Every other write keeps the generic warning. `reply_malformed` has no CLI
+  example for `order.rate`, so its test changes the code of the `uncertain` example and is labelled so.
+- **Tests that could pass falsely**: the rating rows of the stdio substring table are replaced by a test of the result's error flag
+  and structured content (status, `order_id`, rating, `node_refused` / `invalid_order_status`, `reply_timeout`, the rating's
+  warning), on one server. The timed-out-rating test now also checks that no document came and that the text is the rating's
+  timeout, not a parse failure.
+- **Regtest, written and not run** (no Docker daemon here): an untaken order is `uncertain` / `reply_timeout` and a taken one in
+  another status `node_refused`; Bob rates after his watch has ended; a seller rates after a solver settles the dispute
+  (`admtakedispute`, `admsettle` with the node's public test key from `regtest/mostrod/settings.toml` as `ADMIN_NSEC`), with
+  `settled-hold-invoice` or `success`, `admin-settled` and no `rate` asserted. Not reproducible here: a full-privacy counterparty
+  (no switch for it in the commands this server wraps) and a missed PoW probe (timing).
+- **Mutation checks**: routing the rating through the generic write path failed four unit tests and the stdio rating test; ignoring
+  the warning argument failed two; the generic timeout text for a rating failed one; dropping the `message_id` rule from
+  watch_order failed one. All restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 143 + 17 passed (10 regtest ignored), build, `git diff --check`. Not run: the
+  regtest and a real mostro-cli binary.
+
+## Follow-up: Third Review Pass On Rating (PR #16): 2026-11-13
+
+On top of `upstream/main` `3966bae` (AGENTS.md), merged with no conflicts. From the CodeRabbit review of `a1fc799`.
+
+- **Wording**: an `uncertain` rating does not prove publication (`request_rejected` has publication `unknown`). The rating's
+  warning, the tool description, the README and spec 002 now say the rating may have been sent, but whether it was recorded is
+  unknown, and never to call `rate_counterparty` again for that order and side. Tests also check that "it was sent and" is gone.
+- **Failure after start**: `run_waiting` returned `Error::Io` both for a failed `spawn` and for a failure after the CLI started
+  (output not captured, a read, `wait`). The latter is now `Error::IoAfterStart`, with the same text. For a rating it carries the
+  rating's warning; a spawn failure (`Io`, `CliNotFound`) stays a plain error, since nothing was sent. Every other tool shows the same
+  text as before. Tests: the server for both kinds and for two other tools; the backend for a non-executable CLI (`Io`). Not tested:
+  the backend's mapping of a real read or wait failure, which cannot be induced here.
+- **Chat records**: the chat-read test also checks that distinct `message_id`s stay distinct records. The README says the server
+  passes records through and leaves telling them apart to the agent.
+- **Mutation checks**: dropping the rating's after-start arm failed one test; the old wording failed five; classifying a spawn
+  failure as after-start failed the backend test. All restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 147 + 17 passed (10 regtest ignored), `cargo build`, `cargo build --release`,
+  `git diff --check`. Not run: the Windows check of AGENTS.md (target not installed; no Unix API added), the regtest (no Docker
+  daemon), a real mostro-cli binary.
+
+## Follow-up: Exact Rating Acknowledgement (PR #16): 2026-11-13
+
+From CodeRabbit's review of `96046b3`. mostro-cli `v0.17.1` accepts as the acknowledgement only `rate-received` for the same
+order carrying `Payload::RatingUser(r)` with `r` the rating sent (`outcome/rate.rs`). Its `message list` shows that payload as
+`other` / `rating_user` without the score (`outcome/messages/payload.rs`; the CLI's own test maps `RatingUser(5)` that way).
+
+- **Guidance**: the instructions, the rate_counterparty description, the README and spec 002 now say that only the tool's `ok`
+  proves the exact rating, checked by the CLI, which this server passes on without checking anything itself. A `rate-received`
+  record in list_messages shows a rating from this side was recorded, not which one. A missing acknowledgement, a missing rating
+  payload or a mismatched rating confirms nothing. Code behaviour is unchanged.
+- **Tests**: `the_instructions_say_only_an_exact_acknowledgement_confirms_a_rating` and
+  `the_rating_description_says_only_an_exact_acknowledgement_confirms_it` check the rule and the absence of the old blanket claims.
+  Both were written first and failed. Mutation: putting the old instructions sentence back failed the first; restored.
+- **Gates**: fmt, clippy `-D warnings`, `cargo test` 149 + 17 passed (10 regtest ignored), `cargo build`, `cargo build --release`,
+  `git diff --check`. Not run: the regtest (no Docker daemon), the Windows check (target not installed), a real mostro-cli binary.
+
+## Follow-up: Another Attempt After An Uncertain Rating (PR #16): 2026-11-13
+
+**Superseded by "Follow-up: Never Resend An Uncertain Rating" below.** The retry this entry allowed was withdrawn on the
+maintainer's ruling; what it records about the regtest run and the node's database is still evidence, for mostrod v0.20.2 only.
+
+From the maintainer's review of `eab9dbc` (the open thread on "never resend"). Base `upstream/main` `3966bae`, unchanged since the
+last merge, so nothing was merged. Checked against mostrod `v0.20.2` and mostro-cli `v0.17.1` source.
+
+- **The node's guarantee, read in source**: `rate_user.rs` returns early when the sender's flag is already set, then claims it with
+  `db.rs` `claim_order_rating_flag` (`UPDATE orders SET buyer_sent_rate = 1 WHERE id = ? AND buyer_sent_rate = 0 AND status = ?`,
+  the seller's alike) in the same transaction as the score, and commits the score only when the claim won. A second rating from the
+  same side is never counted, never replaces the first, and gets no answer. So the blanket "never call rate_counterparty again for
+  this order and side" had no safety basis.
+- **Guidance** (`outcome.rs`, `server.rs`): the rating's warning now says not to call `rate_counterparty` again on the agent's own;
+  another attempt can never count twice but is usually pointless (the node answers a repeat, a full-privacy counterparty and an
+  untaken order with the same silence), so it is made only when the user asks. `uncertain` with `pow_required` gets its own warning
+  (`outcome::rating_uncertain_warning`): the node most likely dropped the rating for too little work (not proven); it names
+  `error.required` and `error.configured` when they are bit counts (0 to 255, anything else is not echoed), and allows one more
+  attempt, with the user's explicit go-ahead, once the server runs with `POW` at least `error.required`; if that one is uncertain
+  too, stop. Nothing is retried by the server. Timeouts, unreadable output and failures after start keep the general rating
+  warning (no document, so no `pow_required` to read). `error.rs` is unchanged: the rating already overrides its timeout text.
+- **Tests, red first** (10 failed before the change): the POW warning with numbers, without them or with non-bit values, only on
+  `uncertain` (an `error` `pow_required` is a plain error), the other uncertain codes keep the general warning, the description and
+  instructions drop the blanket ban, and the stdio rating test covers `uncertain` / `pow_required` end to end. No CLI example of
+  `uncertain` / `pow_required` exists at v0.17.1; the tests build it from the `rate_uncertain` example with the error the CLI's
+  `ErrorInfo::with_work` produces, and say so. The fake runner now takes a closure so those cases can be built.
+- **Weak assertion found and fixed**: the `rate` needle of the list_messages / watch_order test matched any sentence naming a `rate`
+  message; it now matches the step list itself, and the instructions' `rate` step is pinned. Rewriting the list to drop the step
+  while keeping the word `rate` failed it.
+- **Mutation checks**: the server ignoring the POW selector failed two tests; dropping the `uncertain` check failed one; dropping the
+  0-255 bound failed one; the blanket ban restored failed six; dropping "one more attempt" failed one; dropping the `rate` step from
+  the list or the instructions failed one each; dropping the whole-number reader failed one. All restored. Not pinned by any test:
+  `cli_backend.rs` mapping a real read or `wait` failure to `Error::IoAfterStart` (it cannot be induced here; changing it to
+  `Error::Io` left every test green).
+- **Regtest, run for the first time on this PR**: Docker daemon started locally; mostrod `v0.20.2` image built from
+  `regtest/mostrod/Dockerfile` with its pinned SHA-256 checked (the build container was given this environment's proxy CA through
+  the local `debian:bookworm-slim` base; no repository file changed); mostro-cli `v0.17.1` built from its tag. `cargo test --test
+  regtest_e2e -- --ignored --test-threads=1 --skip loses_the_bond`: 9 passed, including both rating tests. With `MOSTRO_BONDS=1
+  regtest/devenv.sh up`, the bond test: 1 passed. Afterwards, mostrod's database: Bob's identity holds `total_reviews` 2, `min_rating`
+  4, `max_rating` 5 (Alice's 5 and 4); her second rating of the first order (a 1) was not counted. Not reproduced: a full-privacy
+  counterparty and a missed PoW probe.
+- **Gates**: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 154 unit + 17 stdio passed
+  (10 regtest ignored by default; run above), `cargo build`, `cargo build --release`, `git diff --check`. Not run: the Windows check
+  of AGENTS.md (target not installed; no Unix API added).
+
+## Follow-up: Never Resend An Uncertain Rating (PR #16): 2026-11-14
+
+From the maintainer's ruling on issue #10 (2026-11-13, 20:24 UTC): an uncertain rating is never resent, and no minimum mostrod
+version is added. Rule 5 of `AGENTS.md` (no blind retries) has no exception that holds only on some node versions, and a rating
+counted twice would corrupt the counterparty's reputation. This supersedes the policy of the previous entry. Base `upstream/main`
+`3966bae`, unchanged when fetched on 2026-11-14; the branch head before this change was `563dd8f`.
+
+- **Why no node rule**, read in source: mostrod `v0.18.0` `rate_user.rs` checks the order's side flag as loaded, then calls
+  `update_user_rating` and `update_user_rating_event`, with no conditional claim and no transaction; `v0.20.2` begins a transaction,
+  runs `claim_order_rating_flag`, applies the score and commits. This server pins no mostrod version, so it cannot promise that a
+  second attempt counts once. Not run against `v0.18.0`.
+- **Guidance** (`outcome.rs`, `server.rs`, README, spec 002 FR-003 and FR-007): the rating's warning, the `uncertain` /
+  `pow_required` warning, the server instructions and the `rate_counterparty` description say to never call `rate_counterparty`
+  again for that order and side, not even if the user asks. The user-approved retry, the `pow_required` retry and the "harmless",
+  "usually pointless" and "can never count twice" claims are gone. Kept: the rating may have been sent but whether it was recorded
+  is unknown; `get_order` shows no ratings; a missing `rate-received` proves nothing; `uncertain` / `pow_required` names
+  `error.required` and `error.configured` (bit counts only), now so `POW` can be raised for future requests. The server retries
+  nothing. The regtest's second rating from the same side stays as a test-only probe of the pinned v0.20.2 node, with a comment
+  saying so.
+- **Tests, red first**: `RETRY_PERMISSIONS` (twelve phrases) and the rule `not even if the user asks` are checked in the rating's
+  warning, the `pow_required` warning (with and without bit counts), the instructions, the tool description and the stdio rating
+  test. Against the old code 10 of the 154 unit tests failed; the stdio rating test was edited in the same step and was not run red
+  on its own. Four tests were renamed or rewritten, none deleted.
+- **Mutation checks** (in a scratch copy, restored after each): "another attempt is harmless" added to the general warning failed 6
+  unit tests and the stdio test; "one more attempt" back in the `pow_required` warning failed 1 and the stdio test; "unless the user
+  asks" in the instructions failed 1; "go-ahead" in the description failed 1; the general warning's rule weakened failed 6 and the
+  stdio test; the `pow_required` warning's rule weakened failed 2 and the stdio test. My first attempt at the fifth did not apply
+  (its anchor matched twice, and the script refused it), so it showed a false survivor; it was redone with a unique anchor.
+- **Environment** (new for this PR): WSL2 Ubuntu 24.04, rustc and cargo 1.100.0 with clippy and rustfmt, Docker Desktop 29.8.1 with
+  Compose v5.5.1 and its WSL integration enabled for the distro, `mostro-cli` 0.17.1 built from tag `v0.17.1` (commit `0665895`),
+  `jq` 1.8.2. The Windows tree has CRLF line endings, so the Linux gates and the regtest ran from a one-way LF copy of it.
+- **Regtest, run on the final code**: mostrod `v0.20.2` from `regtest/mostrod/Dockerfile` (its pinned SHA-256 is checked in the
+  build). `cargo test --test regtest_e2e -- --ignored --test-threads=1 --skip loses_the_bond`: 9 passed in 103 s, including
+  `both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused` and `the_seller_rates_after_a_solver_settles_the_dispute`.
+  With `MOSTRO_BONDS=1`, `loses_the_bond`: 1 passed in 222 s. Afterwards, mostrod's database: both rated identities hold
+  `min_rating` 4, so the second rating (a 1) of the same side was not counted on this node; one order has both rating flags set,
+  and one only the seller's. One setup problem, not a test failure: under Docker Desktop's WSL integration, `MOSTRO_BONDS=1
+  regtest/devenv.sh up` could not restart the node, because `write_settings` replaces `.state/mostrod.toml` with `mv` and the
+  container's single-file bind mount then pointed at the old file. Removing only the node container and running `up` again fixed
+  it; no repository file changed. Stopped afterwards with `devenv.sh down`.
+- **Gates**: on Linux, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 154 unit + 17 stdio
+  passed (10 regtest ignored by default; run above), `cargo build`, `cargo build --release`; `git diff --check`; and on Windows
+  (rustc 1.95.0, host `x86_64-pc-windows-msvc`) `cargo check --bin mostro-mcp`, the Windows check of AGENTS.md. Not run: `cargo test`
+  natively on Windows (the fake-CLI tests use `/bin/sh` and `std::os::unix`, as on `upstream/main`: at `563dd8f`, 145 of the 154
+  unit tests passed there and the stdio tests did not compile), a full-privacy counterparty and a missed PoW probe on the regtest,
+  and any node older than `v0.20.2`.

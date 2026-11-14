@@ -135,7 +135,7 @@ async fn list_orders_reaches_the_regtest_node() {
         .unwrap();
     let client = connect("alice", false).await;
 
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 17);
     let document = ok(&client, "list_orders", json!({})).await;
     assert_eq!(document["command"], "order.list");
     assert_eq!(document["data"]["node_pubkey"], node);
@@ -251,24 +251,7 @@ async fn trade(maker: Maker, invoice_first: bool) {
         "{read}"
     );
 
-    // Bob sends the fiat and says so.
-    ok(&bob, "fiat_sent", json!({"order_id": id})).await;
-
-    // Alice sees the fiat arrive and releases.
-    poll("the fiat-sent status", || async {
-        (status(&alice, &id).await.as_deref() == Some("fiat-sent")).then_some(())
-    })
-    .await;
-    ok(
-        &alice,
-        "release",
-        json!({"order_id": id, "fiat_received": true}),
-    )
-    .await;
-    poll("the trade to succeed", || async {
-        (status(&alice, &id).await.as_deref() == Some("success")).then_some(())
-    })
-    .await;
+    until_success(&alice, &bob, &id).await;
     assert!(settled("bob", &invoice), "Bob's sats arrived");
     // Bob's watch sees the trade end.
     watch_until(&bob, &id, |found| found["data"]["ended"] == true).await;
@@ -367,6 +350,30 @@ async fn until_active(maker: Maker, invoice_first: bool) -> ActiveTrade {
         id,
         invoice,
     }
+}
+
+/// Finishes an active trade: Bob sends the fiat and says so, Alice sees it
+/// arrive and releases, and the order reaches `success`.
+async fn until_success(
+    alice: &RunningService<RoleClient, ()>,
+    bob: &RunningService<RoleClient, ()>,
+    id: &str,
+) {
+    ok(bob, "fiat_sent", json!({"order_id": id})).await;
+    poll("the fiat-sent status", || async {
+        (status(alice, id).await.as_deref() == Some("fiat-sent")).then_some(())
+    })
+    .await;
+    ok(
+        alice,
+        "release",
+        json!({"order_id": id, "fiat_received": true}),
+    )
+    .await;
+    poll("the trade to succeed", || async {
+        (status(alice, id).await.as_deref() == Some("success")).then_some(())
+    })
+    .await;
 }
 
 /// Calls watch_order with the cursor of each previous call until a result
@@ -542,6 +549,180 @@ async fn the_buyer_disputes_an_active_trade_and_a_pending_order_is_refused() {
     assert!(error, "{again}");
     assert_eq!(again["status"], "uncertain", "{again}");
     assert_eq!(again["error"]["code"], "reply_timeout", "{again}");
+
+    alice.cancel().await.unwrap();
+    bob.cancel().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network (regtest/devenv.sh up)"]
+async fn both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused() {
+    // An order never taken has no counterparty: the node cannot place the
+    // rating and does not answer, so it is uncertain, not a refusal.
+    let alice = connect("alice", true).await;
+    let created = ok(
+        &alice,
+        "create_order",
+        json!({"kind": "sell", "fiat_code": "USD", "fiat_amount": 5,
+               "payment_method": "bank transfer", "amount_sats": 5000}),
+    )
+    .await;
+    let untaken = created["data"]["order"]["id"].as_str().unwrap().to_string();
+    let (silent, error) = call(
+        &alice,
+        "rate_counterparty",
+        json!({"order_id": untaken, "rating": 5}),
+    )
+    .await;
+    assert!(error, "{silent}");
+    assert_eq!(silent["status"], "uncertain", "{silent}");
+    assert_eq!(silent["error"]["code"], "reply_timeout", "{silent}");
+    ok(&alice, "cancel", json!({"order_id": untaken})).await;
+    alice.cancel().await.unwrap();
+
+    let ActiveTrade { alice, bob, id, .. } = until_active(Maker::Seller, true).await;
+
+    // A taken order in another status is refused: an error, nothing recorded.
+    let (refused, error) = call(
+        &bob,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 5}),
+    )
+    .await;
+    assert!(error, "{refused}");
+    assert_eq!(refused["error"]["code"], "node_refused", "{refused}");
+    assert_eq!(
+        refused["error"]["reason"], "invalid_order_status",
+        "{refused}"
+    );
+
+    // The trade finishes; each side rates from the order's status alone,
+    // without waiting for a `rate` message. Bob only rates once his watch has
+    // ended, whether or not a `rate` came in it.
+    until_success(&alice, &bob, &id).await;
+    watch_until(&bob, &id, |found| found["data"]["ended"] == true).await;
+
+    // Alice, the seller, and Bob, the buyer, each rate once; the node echoes
+    // the rating each sent.
+    for (client, rating) in [(&alice, 5), (&bob, 4)] {
+        let rated = ok(
+            client,
+            "rate_counterparty",
+            json!({"order_id": id, "rating": rating}),
+        )
+        .await;
+        assert_eq!(rated["command"], "order.rate", "{rated}");
+        assert_eq!(rated["data"]["order_id"], id.as_str(), "{rated}");
+        assert_eq!(rated["data"]["rating"], rating, "{rated}");
+    }
+
+    // Test only, against the pinned mostrod v0.20.2: a second rating from the
+    // same side gets no answer, so uncertain and never ok. An agent never sends
+    // one: an uncertain rating is never resent, and older nodes may not guard
+    // against the duplicate.
+    let (again, error) = call(
+        &alice,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 1}),
+    )
+    .await;
+    assert!(error, "{again}");
+    assert_eq!(again["status"], "uncertain", "{again}");
+    assert_eq!(again["error"]["code"], "reply_timeout", "{again}");
+
+    // The node's acknowledgement is also among Alice's messages.
+    poll("the rate-received message", || async {
+        let (document, _) = call(&alice, "list_messages", json!({"order_id": id})).await;
+        document["data"]["messages"]
+            .as_array()?
+            .iter()
+            .any(|m| m["action"] == "rate-received")
+            .then_some(())
+    })
+    .await;
+
+    alice.cancel().await.unwrap();
+    bob.cancel().await.unwrap();
+}
+
+/// The node's own key, which the regtest node also accepts as its admin: the
+/// public `mostro-regtest` test key of `regtest/mostrod/settings.toml`.
+fn node_admin_key() -> String {
+    let settings = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/regtest/mostrod/settings.toml"
+    ))
+    .expect("read the regtest node settings");
+    settings
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("nsec_privkey = "))
+        .map(|value| value.trim_matches('\'').to_string())
+        .expect("the node's nsec_privkey")
+}
+
+/// Runs mostro-cli's admin command `args` (`devenv.sh cli alice …` with
+/// `ADMIN_NSEC`), as a solver of the node would.
+fn admin(args: &[&str]) {
+    let output = std::process::Command::new(DEVENV)
+        .arg("cli")
+        .arg("alice")
+        .args(args)
+        .env("ADMIN_NSEC", node_admin_key())
+        .output()
+        .expect("run regtest/devenv.sh cli");
+    assert!(
+        output.status.success(),
+        "admin {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network (regtest/devenv.sh up)"]
+async fn the_seller_rates_after_a_solver_settles_the_dispute() {
+    let ActiveTrade { alice, bob, id, .. } = until_active(Maker::Seller, true).await;
+    let opened = ok(&bob, "open_dispute", json!({"order_id": id})).await;
+    let dispute = opened["data"]["dispute_id"].as_str().unwrap().to_string();
+
+    // A solver takes the dispute and settles it for the buyer.
+    admin(&["admtakedispute", "-d", &dispute]);
+    admin(&["admsettle", "-o", &id]);
+
+    // The seller's order reaches a status the node accepts her rating in.
+    poll("the settled status", || async {
+        matches!(
+            status(&alice, &id).await.as_deref(),
+            Some("settled-hold-invoice" | "success")
+        )
+        .then_some(())
+    })
+    .await;
+    // She is told `admin-settled`, and no `rate` asks her to rate.
+    let actions: Vec<String> = poll("the admin-settled message", || async {
+        let (document, _) = call(&alice, "list_messages", json!({"order_id": id})).await;
+        let actions: Vec<String> = document["data"]["messages"]
+            .as_array()?
+            .iter()
+            .filter_map(|m| m["action"].as_str().map(String::from))
+            .collect();
+        actions
+            .iter()
+            .any(|a| a == "admin-settled")
+            .then_some(actions)
+    })
+    .await;
+    assert!(!actions.iter().any(|a| a == "rate"), "{actions:?}");
+
+    // Her rating, the score the user chose, is still accepted.
+    let rated = ok(
+        &alice,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 4}),
+    )
+    .await;
+    assert_eq!(rated["status"], "ok", "{rated}");
+    assert_eq!(rated["data"]["order_id"], id.as_str(), "{rated}");
+    assert_eq!(rated["data"]["rating"], 4, "{rated}");
 
     alice.cancel().await.unwrap();
     bob.cancel().await.unwrap();

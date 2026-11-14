@@ -31,6 +31,10 @@ PICK = {
     "dispute_node_refused": ("013-dispute-open", "node_refused"),
     "dispute_uncertain": ("013-dispute-open", "no_answer_uncertain"),
     "dispute_order_unknown": ("013-dispute-open", "order_unknown"),
+    "rate_received": ("014-order-rate", "rating_received"),
+    "rate_node_refused": ("014-order-rate", "node_refused"),
+    "rate_uncertain": ("014-order-rate", "no_answer_uncertain"),
+    "rate_out_of_range": ("014-order-rate", "rating_out_of_range"),
 }
 fixtures = {}
 for key, (spec, name) in sorted(PICK.items()):

@@ -6,6 +6,8 @@
 //! a document that says `ok` with a failing exit code, or the reverse, is not
 //! believed.
 
+use std::borrow::Cow;
+
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
@@ -19,6 +21,67 @@ pub const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 /// acted.
 pub const UNCERTAIN_WARNING: &str = "UNCERTAIN: the request may have reached the node. \
 Do NOT retry it. Check the current state first (get_order, list_messages), then decide.";
+
+/// The same for a rating, which no tool can read back: checking the state
+/// settles nothing, so the generic advice does not apply. An uncertain rating
+/// is never resent, whoever asks (the maintainer's ruling on issue #10, by
+/// rule 5 of AGENTS.md): mostrod versions differ in how they guard against a
+/// duplicate rating and this server pins none, so nothing here may promise
+/// that a second attempt counts once.
+pub const RATING_UNCERTAIN_WARNING: &str = "UNCERTAIN RATING: the rating may have been \
+sent, but whether it was recorded is unknown. Never call rate_counterparty again for this \
+order and side, not even if the user asks: this server cannot tell whether the node guards \
+against a duplicate rating. get_order does not show ratings, and a missing `rate-received` \
+message does not prove the rating failed. Tell the user only what is known: the rating may \
+have been sent, but whether it was recorded is unknown.";
+
+/// The rating's warning for `outcome`, read only for an `uncertain` one.
+/// `uncertain` with `pow_required` is the CLI saying it published with less
+/// work than the node advertises (a late read after the silence), so the node
+/// most likely dropped the rating unread: the warning names the work so POW
+/// can be raised for future requests, and still never lets this rating be
+/// sent again. Every other outcome gets [`RATING_UNCERTAIN_WARNING`].
+pub fn rating_uncertain_warning(outcome: &Outcome) -> Cow<'static, str> {
+    let error = outcome.document.get("error");
+    if outcome.status != Status::Uncertain
+        || error.and_then(|e| e.get("code")).and_then(Value::as_str) != Some("pow_required")
+    {
+        return Cow::Borrowed(RATING_UNCERTAIN_WARNING);
+    }
+    // Bit counts only: a number from 0 to 255, never echoed text.
+    let bits = |field: &str| {
+        error
+            .and_then(|e| e.get(field))
+            .and_then(Value::as_u64)
+            .filter(|bits| *bits <= u64::from(u8::MAX))
+    };
+    let (asked, floor) = match (bits("required"), bits("configured")) {
+        (Some(required), Some(configured)) => (
+            format!("the node requires {required} bits; this server's POW is {configured}"),
+            format!("POW set to at least {required} (`error.required`)"),
+        ),
+        (Some(required), None) => (
+            format!("the node requires {required} bits"),
+            format!("POW set to at least {required} (`error.required`)"),
+        ),
+        _ => (
+            "how many bits the node requires is in `error.required`, which this outcome \
+             does not carry"
+                .to_string(),
+            "POW raised to what the node advertises (`error.required`)".to_string(),
+        ),
+    };
+    Cow::Owned(format!(
+        "UNCERTAIN RATING, TOO LITTLE PROOF OF WORK: the rating was published with less \
+         proof of work than the node asks for ({asked}). The node most likely dropped it \
+         unread, but that is not proven. Never call rate_counterparty again for this order \
+         and side, not even if the user asks. Tell the user the rating may have been sent, \
+         but whether it was recorded is unknown, and that the proof of work was too low. \
+         To avoid this on future requests the user can run this server with {floor}; POW \
+         is read when this server starts. get_order does not show ratings, and a missing \
+         `rate-received` message does not prove the rating failed."
+    ))
+}
 
 /// A short, cleaned excerpt of output that is not an outcome document, for an
 /// error message.
@@ -130,13 +193,19 @@ impl Outcome {
     /// The tool result: the document as text and as structured content. A
     /// failure is a tool error; an uncertain outcome says first not to retry.
     pub fn into_tool_result(self) -> CallToolResult {
+        self.into_tool_result_warned(UNCERTAIN_WARNING)
+    }
+
+    /// [`Outcome::into_tool_result`] with `warning` heading an `uncertain`
+    /// result instead of the generic one.
+    pub fn into_tool_result_warned(self, warning: &str) -> CallToolResult {
         let text = self.document.to_string();
         match self.status {
             Status::Ok => CallToolResult::structured(self.document),
             Status::Error => CallToolResult::structured_error(self.document),
             Status::Uncertain => {
                 let mut result = CallToolResult::structured_error(self.document);
-                result.content = vec![ContentBlock::text(format!("{UNCERTAIN_WARNING}\n\n{text}"))];
+                result.content = vec![ContentBlock::text(format!("{warning}\n\n{text}"))];
                 result
             }
         }
@@ -223,6 +292,30 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn only_an_uncertain_pow_required_rating_gets_the_proof_of_work_warning() {
+        let with_error = |status: &str, code: i32, error: Value| {
+            let (stdout, _) = fixture("rate_uncertain");
+            let mut document: Value = serde_json::from_str(&stdout).unwrap();
+            document["status"] = status.into();
+            document["error"] = error;
+            Outcome::parse(&document.to_string(), Some(code)).unwrap()
+        };
+        let pow = serde_json::json!({"code": "pow_required", "message": "m",
+            "required": 22, "configured": 0});
+        let uncertain = rating_uncertain_warning(&with_error("uncertain", 1, pow.clone()));
+        assert!(
+            uncertain.starts_with("UNCERTAIN RATING, TOO LITTLE PROOF OF WORK"),
+            "{uncertain}"
+        );
+        assert!(uncertain.contains("22 bits"), "{uncertain}");
+        // Nothing was published on an `error`: not this warning's case.
+        let unsent = rating_uncertain_warning(&with_error("error", 1, pow));
+        assert_eq!(unsent, RATING_UNCERTAIN_WARNING);
+        let silent = rating_uncertain_warning(&parsed("rate_uncertain"));
+        assert_eq!(silent, RATING_UNCERTAIN_WARNING);
     }
 
     #[test]

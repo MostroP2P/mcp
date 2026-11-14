@@ -108,7 +108,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-async fn a_client_discovers_sixteen_typed_tools() {
+async fn a_client_discovers_seventeen_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -132,6 +132,7 @@ async fn a_client_discovers_sixteen_typed_tools() {
         "watch_order",
         "read_chat",
         "open_dispute",
+        "rate_counterparty",
     ] {
         assert!(
             instructions.contains(reference),
@@ -155,6 +156,7 @@ async fn a_client_discovers_sixteen_typed_tools() {
             "list_my_orders",
             "list_orders",
             "open_dispute",
+            "rate_counterparty",
             "read_chat",
             "release",
             "send_chat",
@@ -179,6 +181,16 @@ async fn a_client_discovers_sixteen_typed_tools() {
     let dispute = tools.iter().find(|t| t.name == "open_dispute").unwrap();
     let schema = serde_json::to_value(&dispute.input_schema).unwrap();
     assert_eq!(schema["required"], json!(["order_id"]));
+    let rate = tools
+        .iter()
+        .find(|t| t.name == "rate_counterparty")
+        .unwrap();
+    let schema = serde_json::to_value(&rate.input_schema).unwrap();
+    assert_eq!(schema["required"], json!(["order_id", "rating"]));
+    let rating = &schema["properties"]["rating"];
+    assert_eq!(rating["type"], "integer", "{rating}");
+    assert_eq!(rating["minimum"], json!(1), "{rating}");
+    assert_eq!(rating["maximum"], json!(5), "{rating}");
 
     client.cancel().await.unwrap();
 }
@@ -336,7 +348,7 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
         "{}",
         text(&result)
     );
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 17);
     client.cancel().await.unwrap();
 }
 
@@ -415,7 +427,7 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("is not an order id"));
 
     // The server is still serving afterwards.
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 16);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 17);
     client.cancel().await.unwrap();
 }
 
@@ -530,6 +542,17 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
                 "--yes",
             ],
         ),
+        (
+            "rate_counterparty",
+            json!({"order_id": id, "rating": 5}),
+            vec![
+                "order",
+                "rate",
+                "--order=ffdc768a-37d8-429e-bfcc-0968be56b6f9",
+                "--rating=5",
+                "--yes",
+            ],
+        ),
     ] {
         let result = call(&client, tool, args).await;
         assert_ne!(result.is_error, Some(true), "{tool}: {}", text(&result));
@@ -551,6 +574,37 @@ async fn a_whole_trade_reaches_the_cli_as_its_json_commands() {
         "{}",
         text(&refused)
     );
+    // A whole number written as a float is the same rating.
+    let rated = call(
+        &client,
+        "rate_counterparty",
+        json!({"order_id": id, "rating": 5.0}),
+    )
+    .await;
+    assert_ne!(rated.is_error, Some(true), "{}", text(&rated));
+    assert_eq!(data_of(&rated)["args"][4], "--rating=5");
+    for bad in [
+        json!(0),
+        json!(6),
+        json!(-1),
+        json!(4.5),
+        json!(5.5),
+        json!(6.0),
+        json!("5"),
+    ] {
+        let refused = call(
+            &client,
+            "rate_counterparty",
+            json!({"order_id": id, "rating": bad}),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true), "{bad}: {}", text(&refused));
+        assert!(
+            refused.structured_content.is_none(),
+            "{bad}: refused before the CLI ran: {}",
+            text(&refused)
+        );
+    }
     client.cancel().await.unwrap();
 }
 
@@ -636,6 +690,109 @@ async fn the_cli_s_own_errors_for_the_new_tools_reach_the_agent() {
         );
         client.cancel().await.unwrap();
     }
+}
+
+/// Each outcome of a rating reaches the agent as the CLI's own document: the
+/// result's error flag and structured content, not a substring of its text.
+#[tokio::test]
+async fn the_cli_s_rating_outcomes_reach_the_agent_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(&dir);
+    let client = connect(&cli, true).await;
+    let order = "00000000-0000-0000-0000-000000000001";
+    // The fake CLI reads its reply on every run: one server serves all three.
+    let outcome = async |fixture: &str| {
+        answer_with(&dir, fixture);
+        call(
+            &client,
+            "rate_counterparty",
+            json!({"order_id": order, "rating": 5}),
+        )
+        .await
+    };
+
+    let rated = outcome("rate_received").await;
+    assert_ne!(rated.is_error, Some(true), "{}", text(&rated));
+    let document = rated.structured_content.clone().expect("a document");
+    assert_eq!(document["status"], "ok");
+    assert_eq!(document["command"], "order.rate");
+    assert_eq!(document["data"]["order_id"], order);
+    assert_eq!(document["data"]["rating"], 5);
+
+    let refused = outcome("rate_node_refused").await;
+    assert_eq!(refused.is_error, Some(true));
+    let document = refused.structured_content.clone().expect("a document");
+    assert_eq!(document["status"], "error");
+    assert_eq!(document["error"]["code"], "node_refused");
+    assert_eq!(document["error"]["reason"], "invalid_order_status");
+    assert!(
+        !text(&refused).starts_with("UNCERTAIN"),
+        "{}",
+        text(&refused)
+    );
+
+    let uncertain = outcome("rate_uncertain").await;
+    assert_eq!(uncertain.is_error, Some(true));
+    let document = uncertain.structured_content.clone().expect("a document");
+    assert_eq!(document["status"], "uncertain");
+    assert_eq!(document["error"]["code"], "reply_timeout");
+    let body = text(&uncertain);
+    assert!(body.starts_with("UNCERTAIN RATING"), "{body}");
+    assert!(
+        body.contains("Never call rate_counterparty again for this order and side")
+            && body.contains("not even if the user asks")
+            && body.contains("may have been sent, but whether it was recorded is unknown"),
+        "{body}"
+    );
+    // No text tells the agent another attempt is allowed or harmless.
+    for permission in [
+        "harmless",
+        "usually pointless",
+        "another attempt",
+        "one more attempt",
+        "go-ahead",
+        "never count twice",
+        "again on your own",
+    ] {
+        assert!(!body.contains(permission), "{permission}: {body}");
+    }
+
+    // `uncertain` / `pow_required` (no CLI example exists; this is the
+    // uncertain example with the error the CLI builds for it).
+    let mut short: Value = serde_json::from_str(OUTCOMES).unwrap();
+    let short = short["rate_uncertain"]["stdout"].take();
+    let mut short = short;
+    short["error"] = json!({"code": "pow_required",
+        "message": "The node requires more proof of work than is configured.",
+        "required": 22, "configured": 0});
+    std::fs::write(dir.path().join("reply.json"), short.to_string()).unwrap();
+    let pow = call(
+        &client,
+        "rate_counterparty",
+        json!({"order_id": order, "rating": 5}),
+    )
+    .await;
+    assert_eq!(pow.is_error, Some(true));
+    let document = pow.structured_content.clone().expect("a document");
+    assert_eq!(document["error"]["code"], "pow_required");
+    let body = text(&pow);
+    assert!(
+        body.starts_with("UNCERTAIN RATING, TOO LITTLE PROOF OF WORK")
+            && body.contains("the node requires 22 bits")
+            && body.contains("future requests")
+            && body.contains("Never call rate_counterparty again for this order and side")
+            && body.contains("not even if the user asks"),
+        "{body}"
+    );
+    for permission in [
+        "one more attempt",
+        "another attempt",
+        "go-ahead",
+        "harmless",
+    ] {
+        assert!(!body.contains(permission), "{permission}: {body}");
+    }
+    client.cancel().await.unwrap();
 }
 
 /// The server with piped stdio, and a thread collecting its stderr.
