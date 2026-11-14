@@ -10,6 +10,7 @@ use crate::tools::{
     add_invoice::AddInvoiceParams,
     chat::{ReadChatParams, SendChatParams},
     list_messages::ListMessagesParams,
+    nodes::SelectNodeParams,
     sync_orders::SyncOrdersParams,
     trade_step::{OrderStepParams, ReleaseParams},
     watch_order::WatchOrderParams,
@@ -18,7 +19,12 @@ use crate::tools::{
 /// Records every argument vector, and the extra time each run was given, and
 /// answers with a canned result.
 struct FakeCli {
+    node: crate::nodes::NodeSelection,
     calls: Mutex<Vec<Vec<String>>>,
+    /// The node key each run went to, read when the run started.
+    ran_on: Mutex<Vec<String>>,
+    /// Held by a test to keep a run in flight.
+    gate: tokio::sync::Mutex<()>,
     waits: Mutex<Vec<std::time::Duration>>,
     reply: fn() -> MostroResult<CliRun>,
 }
@@ -26,7 +32,12 @@ struct FakeCli {
 impl FakeCli {
     fn answering(reply: fn() -> MostroResult<CliRun>) -> Self {
         Self {
+            node: crate::nodes::NodeSelection::new(crate::nodes::NodeTarget::of(
+                crate::nodes::default_node(),
+            )),
             calls: Mutex::new(Vec::new()),
+            ran_on: Mutex::new(Vec::new()),
+            gate: tokio::sync::Mutex::new(()),
             waits: Mutex::new(Vec::new()),
             reply,
         }
@@ -34,13 +45,19 @@ impl FakeCli {
 }
 
 impl CliRunner for Arc<FakeCli> {
+    fn selection(&self) -> &crate::nodes::NodeSelection {
+        &self.node
+    }
+
     async fn run_waiting(
         &self,
         args: Vec<String>,
         extra: std::time::Duration,
     ) -> MostroResult<CliRun> {
         self.calls.lock().unwrap().push(args);
+        self.ran_on.lock().unwrap().push(self.node.current().pubkey);
         self.waits.lock().unwrap().push(extra);
+        drop(self.gate.lock().await);
         (self.reply)()
     }
 }
@@ -90,7 +107,7 @@ fn sell_order() -> CreateOrderParams {
 }
 
 #[test]
-fn sixteen_tools_with_honest_read_only_hints() {
+fn eighteen_tools_with_honest_read_only_hints() {
     let (server, _) = server(false);
     let mut tools: Vec<_> = server
         .tool_router
@@ -113,10 +130,12 @@ fn sixteen_tools_with_honest_read_only_hints() {
             ("get_order".to_string(), Some(true)),
             ("list_messages".to_string(), Some(true)),
             ("list_my_orders".to_string(), Some(true)),
+            ("list_nodes".to_string(), Some(true)),
             ("list_orders".to_string(), Some(true)),
             ("open_dispute".to_string(), Some(false)),
             ("read_chat".to_string(), Some(true)),
             ("release".to_string(), Some(false)),
+            ("select_node".to_string(), Some(false)),
             ("send_chat".to_string(), Some(false)),
             ("sync_orders".to_string(), Some(false)),
             ("take_order".to_string(), Some(false)),
@@ -626,4 +645,224 @@ fn the_instructions_leave_a_dispute_to_the_user() {
     ] {
         assert!(INSTRUCTIONS.contains(needle), "{needle}");
     }
+}
+
+fn select(node: &str, leave_open_orders: bool) -> Parameters<SelectNodeParams> {
+    Parameters(SelectNodeParams {
+        node: node.into(),
+        leave_open_orders,
+    })
+}
+
+#[tokio::test]
+async fn list_nodes_shows_the_catalog_without_running_the_cli() {
+    let (server, cli) = server(false);
+    let result = server.list_nodes().await;
+    assert_ne!(result.is_error, Some(true));
+    let listed = result.structured_content.unwrap();
+    assert_eq!(listed["current"]["id"], "global");
+    assert!(cli.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn select_node_refuses_a_node_outside_the_catalog_before_any_run() {
+    let (server, cli) = server(true);
+    let result = server.select_node(select(&"ab".repeat(32), false)).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(text_of(&result).contains("not a trusted node"));
+    assert!(cli.calls.lock().unwrap().is_empty());
+    assert_eq!(
+        cli.node.current().pubkey,
+        crate::nodes::default_node().pubkey
+    );
+}
+
+#[tokio::test]
+async fn select_node_switches_when_no_order_is_open_and_names_the_node() {
+    let (server, cli) = server(false);
+    let result = server.select_node(select("argentina", false)).await;
+    assert_ne!(result.is_error, Some(true), "{}", text_of(&result));
+    assert_eq!(*cli.calls.lock().unwrap(), [vec!["order", "mine"]]);
+    let argentina = crate::nodes::by_id("argentina").unwrap();
+    assert_eq!(cli.node.current(), crate::nodes::NodeTarget::of(argentina));
+    assert_eq!(
+        result.structured_content.unwrap()["selected"]["id"],
+        "argentina"
+    );
+}
+
+#[tokio::test]
+async fn select_node_refuses_while_the_local_store_has_open_orders() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("mine_newest_first")));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let result = server.select_node(select("argentina", false)).await;
+    assert_eq!(result.is_error, Some(true));
+    let text = text_of(&result);
+    assert!(
+        text.contains("00000000-0000-0000-0000-000000000005"),
+        "{text}"
+    );
+    assert!(text.contains("waiting-payment"), "{text}");
+    assert_eq!(
+        cli.node.current().pubkey,
+        crate::nodes::default_node().pubkey
+    );
+}
+
+#[tokio::test]
+async fn select_node_does_not_switch_when_the_local_store_cannot_be_read() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("messages_identity_missing")));
+    let server = MostroServer::new(Arc::clone(&cli), true);
+    let result = server.select_node(select("argentina", false)).await;
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        cli.node.current().pubkey,
+        crate::nodes::default_node().pubkey
+    );
+}
+
+#[tokio::test]
+async fn select_node_can_leave_open_orders_once_the_user_confirmed() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("mine_newest_first")));
+    let server = MostroServer::new(Arc::clone(&cli), false);
+    let result = server.select_node(select("mexico", true)).await;
+    assert_ne!(result.is_error, Some(true), "{}", text_of(&result));
+    assert!(cli.calls.lock().unwrap().is_empty());
+    assert_eq!(
+        cli.node.current().pubkey,
+        crate::nodes::by_id("mexico").unwrap().pubkey
+    );
+}
+
+#[tokio::test]
+async fn selecting_the_node_already_in_use_checks_nothing() {
+    let cli = Arc::new(FakeCli::answering(|| run_of("mine_newest_first")));
+    let server = MostroServer::new(Arc::clone(&cli), false);
+    let result = server.select_node(select("global", false)).await;
+    assert_ne!(result.is_error, Some(true), "{}", text_of(&result));
+    assert!(cli.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn results_name_the_node_once_the_user_switched() {
+    let (server, _cli) = server(false);
+    let before = server
+        .list_orders(Parameters(ListOrdersParams::default()))
+        .await;
+    assert_eq!(before.content.len(), 1, "no node line before a switch");
+
+    server.select_node(select("argentina", false)).await;
+    let after = server
+        .list_orders(Parameters(ListOrdersParams::default()))
+        .await;
+    let node_line = after
+        .content
+        .last()
+        .unwrap()
+        .as_text()
+        .unwrap()
+        .text
+        .clone();
+    assert!(node_line.contains("MostrAR"), "{node_line}");
+    assert!(node_line.contains("argentina"), "{node_line}");
+    // The first block is still the CLI's document, unchanged.
+    let document: serde_json::Value =
+        serde_json::from_str(&after.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(document, after.structured_content.unwrap());
+}
+
+async fn wait_for_runs(cli: &FakeCli, runs: usize) {
+    for _ in 0..200 {
+        if cli.calls.lock().unwrap().len() >= runs {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("expected {runs} runs");
+}
+
+#[tokio::test]
+async fn a_switch_waits_for_the_run_in_flight_to_finish_on_the_old_node() {
+    let (server, cli) = server(false);
+    let held = cli.gate.lock().await;
+    let run = tokio::spawn({
+        let server = server.clone();
+        async move {
+            server
+                .list_orders(Parameters(ListOrdersParams::default()))
+                .await
+        }
+    });
+    wait_for_runs(&cli, 1).await;
+    let switch = tokio::spawn({
+        let server = server.clone();
+        async move { server.select_node(select("argentina", true)).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let global = crate::nodes::default_node().pubkey;
+    assert_eq!(cli.node.current().pubkey, global, "the switch waited");
+
+    drop(held);
+    run.await.unwrap();
+    switch.await.unwrap();
+    assert_eq!(*cli.ran_on.lock().unwrap(), [global]);
+    assert_eq!(
+        cli.node.current().pubkey,
+        crate::nodes::by_id("argentina").unwrap().pubkey
+    );
+}
+
+#[tokio::test]
+async fn no_tool_runs_between_the_open_order_check_and_the_switch() {
+    let (server, cli) = server(false);
+    let held = cli.gate.lock().await;
+    let switch = tokio::spawn({
+        let server = server.clone();
+        async move { server.select_node(select("mexico", false)).await }
+    });
+    wait_for_runs(&cli, 1).await;
+    let run = tokio::spawn({
+        let server = server.clone();
+        async move {
+            server
+                .list_orders(Parameters(ListOrdersParams::default()))
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(cli.calls.lock().unwrap().len(), 1, "the tool waited");
+
+    drop(held);
+    switch.await.unwrap();
+    run.await.unwrap();
+    let mexico = crate::nodes::by_id("mexico").unwrap().pubkey;
+    let global = crate::nodes::default_node().pubkey;
+    assert_eq!(*cli.ran_on.lock().unwrap(), [global, mexico]);
+}
+
+#[tokio::test]
+async fn refusals_before_any_run_name_the_node_in_use_after_a_switch() {
+    let (server, cli) = server(false);
+    server.select_node(select("argentina", false)).await;
+    let runs = cli.calls.lock().unwrap().len();
+
+    let refused_write = server.cancel(Parameters(step())).await;
+    let invalid_read = server
+        .get_order(Parameters(GetOrderParams {
+            order_id: "nope".into(),
+        }))
+        .await;
+    for result in [refused_write, invalid_read] {
+        assert_eq!(result.is_error, Some(true));
+        let last = result
+            .content
+            .last()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        assert!(last.contains("MostrAR (`argentina`"), "{last}");
+    }
+    assert_eq!(cli.calls.lock().unwrap().len(), runs, "nothing ran");
 }

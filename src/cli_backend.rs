@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::nodes::{NodeSelection, NodeTarget};
 
 /// The parent variables the CLI may see besides the node configuration. The
 /// child's environment starts empty: an allow-list, so nothing the operator
@@ -52,6 +53,9 @@ pub struct CliRun {
 /// What the tools need from the CLI: run it with these arguments. The server
 /// is generic over it so tests drive the tools without a subprocess.
 pub trait CliRunner: Send + Sync + 'static {
+    /// The node every run goes to; `select_node` changes it.
+    fn selection(&self) -> &NodeSelection;
+
     /// Runs the CLI, stopping it `extra` after the per-command timeout: a
     /// command that waits on purpose (`order watch`) gets its own deadline on
     /// top of the time every command needs.
@@ -70,8 +74,7 @@ pub trait CliRunner: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct MostroCliBackend {
     binary: PathBuf,
-    mostro_pubkey: String,
-    relays: String,
+    node: NodeSelection,
     pow: Option<u32>,
     transport: Option<String>,
     mcli_dir: Option<PathBuf>,
@@ -86,8 +89,10 @@ impl MostroCliBackend {
     pub fn new(config: &Config) -> Self {
         Self {
             binary: config.cli_path.clone(),
-            mostro_pubkey: config.mostro_pubkey.clone(),
-            relays: config.relays.join(","),
+            node: NodeSelection::new(NodeTarget {
+                pubkey: config.mostro_pubkey.clone(),
+                relays: config.relays.clone(),
+            }),
             pow: config.pow,
             transport: config.transport.clone(),
             mcli_dir: config.mcli_dir.clone(),
@@ -99,6 +104,7 @@ impl MostroCliBackend {
     /// The command for `args`, ready to spawn. Separate so its environment
     /// and arguments are tested without running anything.
     fn command(&self, args: &[String]) -> Command {
+        let node = self.node.current();
         let mut cmd = Command::new(&self.binary);
         cmd.env_clear();
         for key in FORWARDED_ENV {
@@ -108,8 +114,8 @@ impl MostroCliBackend {
         }
         cmd.arg("--output=json")
             .args(args)
-            .env("MOSTRO_PUBKEY", &self.mostro_pubkey)
-            .env("RELAYS", &self.relays)
+            .env("MOSTRO_PUBKEY", &node.pubkey)
+            .env("RELAYS", node.relays.join(","))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -130,6 +136,10 @@ impl MostroCliBackend {
 }
 
 impl CliRunner for MostroCliBackend {
+    fn selection(&self) -> &NodeSelection {
+        &self.node
+    }
+
     async fn run_waiting(&self, args: Vec<String>, extra: Duration) -> Result<CliRun> {
         let _turn = self.turn.lock().await;
         let mut child = self.command(&args).spawn().map_err(|e| match e.kind() {
@@ -280,7 +290,9 @@ mod tests {
         MostroCliBackend::new(&Config {
             cli_path: binary,
             mostro_pubkey: "ab".repeat(32),
+            node_source: crate::config::Source::Environment,
             relays: vec!["ws://localhost:7000".into()],
+            relays_source: crate::config::Source::Environment,
             pow: Some(0),
             transport: None,
             mcli_dir: Some(PathBuf::from("/tmp/mcli-test")),
@@ -305,6 +317,22 @@ mod tests {
             .unwrap();
         assert!(status.success(), "could not write the fake CLI");
         path
+    }
+
+    #[test]
+    fn a_selected_node_reaches_the_next_command() {
+        let backend = backend(PathBuf::from("/bin/true"), Duration::from_secs(1));
+        let mexico = crate::nodes::by_id("mexico").unwrap();
+        backend.selection().set(NodeTarget::of(mexico));
+        let cmd = backend.command(&["order".into(), "list".into()]);
+        let env = |name: &str| {
+            cmd.as_std()
+                .get_envs()
+                .find(|(k, _)| *k == name)
+                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(env("MOSTRO_PUBKEY").as_deref(), Some(mexico.pubkey));
+        assert_eq!(env("RELAYS"), Some(mexico.relays.join(",")));
     }
 
     #[test]
