@@ -281,6 +281,9 @@ order carrying `Payload::RatingUser(r)` with `r` the rating sent (`outcome/rate.
 
 ## Follow-up: Another Attempt After An Uncertain Rating (PR #16): 2026-11-13
 
+**Superseded by "Follow-up: Never Resend An Uncertain Rating" below.** The retry this entry allowed was withdrawn on the
+maintainer's ruling; what it records about the regtest run and the node's database is still evidence, for mostrod v0.20.2 only.
+
 From the maintainer's review of `eab9dbc` (the open thread on "never resend"). Base `upstream/main` `3966bae`, unchanged since the
 last merge, so nothing was merged. Checked against mostrod `v0.20.2` and mostro-cli `v0.17.1` source.
 
@@ -320,3 +323,50 @@ last merge, so nothing was merged. Checked against mostrod `v0.20.2` and mostro-
 - **Gates**: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 154 unit + 17 stdio passed
   (10 regtest ignored by default; run above), `cargo build`, `cargo build --release`, `git diff --check`. Not run: the Windows check
   of AGENTS.md (target not installed; no Unix API added).
+
+## Follow-up: Never Resend An Uncertain Rating (PR #16): 2026-11-14
+
+From the maintainer's ruling on issue #10 (2026-11-13, 20:24 UTC): an uncertain rating is never resent, and no minimum mostrod
+version is added. Rule 5 of `AGENTS.md` (no blind retries) has no exception that holds only on some node versions, and a rating
+counted twice would corrupt the counterparty's reputation. This supersedes the policy of the previous entry. Base `upstream/main`
+`3966bae`, unchanged when fetched on 2026-11-14; the branch head before this change was `563dd8f`.
+
+- **Why no node rule**, read in source: mostrod `v0.18.0` `rate_user.rs` checks the order's side flag as loaded, then calls
+  `update_user_rating` and `update_user_rating_event`, with no conditional claim and no transaction; `v0.20.2` begins a transaction,
+  runs `claim_order_rating_flag`, applies the score and commits. This server pins no mostrod version, so it cannot promise that a
+  second attempt counts once. Not run against `v0.18.0`.
+- **Guidance** (`outcome.rs`, `server.rs`, README, spec 002 FR-003 and FR-007): the rating's warning, the `uncertain` /
+  `pow_required` warning, the server instructions and the `rate_counterparty` description say to never call `rate_counterparty`
+  again for that order and side, not even if the user asks. The user-approved retry, the `pow_required` retry and the "harmless",
+  "usually pointless" and "can never count twice" claims are gone. Kept: the rating may have been sent but whether it was recorded
+  is unknown; `get_order` shows no ratings; a missing `rate-received` proves nothing; `uncertain` / `pow_required` names
+  `error.required` and `error.configured` (bit counts only), now so `POW` can be raised for future requests. The server retries
+  nothing. The regtest's second rating from the same side stays as a test-only probe of the pinned v0.20.2 node, with a comment
+  saying so.
+- **Tests, red first**: `RETRY_PERMISSIONS` (twelve phrases) and the rule `not even if the user asks` are checked in the rating's
+  warning, the `pow_required` warning (with and without bit counts), the instructions, the tool description and the stdio rating
+  test. Against the old code 10 of the 154 unit tests failed; the stdio rating test was edited in the same step and was not run red
+  on its own. Four tests were renamed or rewritten, none deleted.
+- **Mutation checks** (in a scratch copy, restored after each): "another attempt is harmless" added to the general warning failed 6
+  unit tests and the stdio test; "one more attempt" back in the `pow_required` warning failed 1 and the stdio test; "unless the user
+  asks" in the instructions failed 1; "go-ahead" in the description failed 1; the general warning's rule weakened failed 6 and the
+  stdio test; the `pow_required` warning's rule weakened failed 2 and the stdio test. My first attempt at the fifth did not apply
+  (its anchor matched twice, and the script refused it), so it showed a false survivor; it was redone with a unique anchor.
+- **Environment** (new for this PR): WSL2 Ubuntu 24.04, rustc and cargo 1.100.0 with clippy and rustfmt, Docker Desktop 29.8.1 with
+  Compose v5.5.1 and its WSL integration enabled for the distro, `mostro-cli` 0.17.1 built from tag `v0.17.1` (commit `0665895`),
+  `jq` 1.8.2. The Windows tree has CRLF line endings, so the Linux gates and the regtest ran from a one-way LF copy of it.
+- **Regtest, run on the final code**: mostrod `v0.20.2` from `regtest/mostrod/Dockerfile` (its pinned SHA-256 is checked in the
+  build). `cargo test --test regtest_e2e -- --ignored --test-threads=1 --skip loses_the_bond`: 9 passed in 103 s, including
+  `both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused` and `the_seller_rates_after_a_solver_settles_the_dispute`.
+  With `MOSTRO_BONDS=1`, `loses_the_bond`: 1 passed in 222 s. Afterwards, mostrod's database: both rated identities hold
+  `min_rating` 4, so the second rating (a 1) of the same side was not counted on this node; one order has both rating flags set,
+  and one only the seller's. One setup problem, not a test failure: under Docker Desktop's WSL integration, `MOSTRO_BONDS=1
+  regtest/devenv.sh up` could not restart the node, because `write_settings` replaces `.state/mostrod.toml` with `mv` and the
+  container's single-file bind mount then pointed at the old file. Removing only the node container and running `up` again fixed
+  it; no repository file changed. Stopped afterwards with `devenv.sh down`.
+- **Gates**: on Linux, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 154 unit + 17 stdio
+  passed (10 regtest ignored by default; run above), `cargo build`, `cargo build --release`; `git diff --check`; and on Windows
+  (rustc 1.95.0, host `x86_64-pc-windows-msvc`) `cargo check --bin mostro-mcp`, the Windows check of AGENTS.md. Not run: `cargo test`
+  natively on Windows (the fake-CLI tests use `/bin/sh` and `std::os::unix`, as on `upstream/main`: at `563dd8f`, 145 of the 154
+  unit tests passed there and the stdio tests did not compile), a full-privacy counterparty and a missed PoW probe on the regtest,
+  and any node older than `v0.20.2`.

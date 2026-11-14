@@ -252,21 +252,20 @@ that was never taken (it cannot name both parties) and on internal failures,
 one of which comes after the rating is stored. An `uncertain` rating, a
 timeout, unreadable output, or a CLI that started and then failed is headed by
 the rating's own warning, not the generic one: tell the user the rating may
-have been sent, but whether it was recorded is unknown, and do not call
-`rate_counterparty` again on the agent's own. mostrod (v0.20.2,
-`claim_order_rating_flag`) claims a side's rating flag atomically, in the same
-transaction as the score (`... AND buyer_sent_rate = 0`), so a second rating
-from the same side can never count twice; but it cannot replace a recorded
-rating either, and in every silent case above it gets the same silence. Another
-attempt is therefore harmless but usually pointless, and is made only when the
-user asks for it. `uncertain` with `pow_required` gets a warning of its own: the
-node most likely dropped the rating for too little proof of work (likely, not
-proven); the warning names the bits the node requires (`error.required`) and
-the `POW` that was mined (`error.configured`), and says one more attempt, with
-the user's go-ahead, is reasonable once the server runs with `POW` at least
-`error.required` (`POW` is read at startup). If that attempt is uncertain too,
-the agent stops. Nothing is ever retried automatically. A CLI that could not
-start sent nothing and is a plain error. `get_order` does not show ratings. Only the tool's `ok`
+have been sent, but whether it was recorded is unknown. **An uncertain rating
+is never resent**: the agent never calls `rate_counterparty` again for that
+order and side, not even if the user asks. mostrod versions differ in how they
+guard against a duplicate rating (v0.18.0 checks the order's side flag and then
+writes the score, with no conditional claim; v0.20.2 claims the flag and writes
+the score in one transaction, `claim_order_rating_flag`), and this server pins
+no node version, so it cannot promise that a second attempt would count once.
+`uncertain` with `pow_required` gets a warning of its own: the node most likely
+dropped the rating for too little proof of work (likely, not proven); the
+warning names the bits the node requires (`error.required`) and the `POW` that
+was mined (`error.configured`) so the user can raise `POW` for future requests
+(`POW` is read at startup), and it still does not let this rating be sent
+again. Nothing is ever retried automatically. A CLI that could not start sent
+nothing and is a plain error. `get_order` does not show ratings. Only the tool's `ok`
 proves the exact rating: mostro-cli accepts as the acknowledgement only a
 `rate-received` for the same order carrying the same rating, and this server
 passes that result on without checking anything itself. A `rate-received`

@@ -49,9 +49,8 @@ standalone module, conservative annotations and no extra confirmation parameter.
   outcome proves (`ok` recorded, `error` nothing recorded, `uncertain` unknown, with the silent cases); after an `uncertain` rating,
   a timeout, unreadable output or a CLI that started and then failed (`Error::IoAfterStart`), say the rating may have been sent but
   whether it was recorded is unknown, under a warning of its own (the generic one says to check the state, which no tool can for a
-  rating), and never call `rate_counterparty` again on the agent's own: another attempt cannot count twice (FR-007) but is usually
-  pointless, so it is made only when the user asks; `uncertain` with `pow_required` gets its own warning (FR-007); a CLI that
-  never started sent nothing; `get_order`
+  rating), and never call `rate_counterparty` again for that order and side, not even if the user asks (FR-007); `uncertain` with
+  `pow_required` gets its own warning (FR-007); a CLI that never started sent nothing; `get_order`
   does not show ratings; only the tool's `ok` proves the exact rating, and a `rate-received` record in `list_messages` shows a
   rating was recorded but not which one (a missing acknowledgement, a missing rating payload or a mismatched rating confirms
   nothing).
@@ -61,16 +60,18 @@ standalone module, conservative annotations and no extra confirmation parameter.
   records have no `event_id`) once (the first watch replays 30 minutes), and a null or unknown
   `next_step` read from `action`. `rating` also accepts a whole number written as a float (`5.0`), as JSON Schema's `integer` does.
 - **FR-006**: The four `order.rate` examples of spec `014-order-rate` are fixtures; README and test summary updated.
-- **FR-007**: Another attempt after an uncertain rating. mostrod v0.20.2 claims a side's rating flag with one conditional update in
-  the same transaction as the score (`db.rs` `claim_order_rating_flag`: `UPDATE orders SET buyer_sent_rate = 1 WHERE id = ? AND
-  buyer_sent_rate = 0 AND status = ?`, the seller's alike; `rate_user.rs` commits the score only when the claim won, and returns early
-  when the flag is already set). So a second rating from the same side is never counted and never replaces the first; it is answered
-  with the same silence as every silent case above. The rating's warning therefore says another attempt is harmless but usually
-  pointless and is made only when the user asks, never on the agent's own. For `uncertain` with `pow_required` (published, then a
-  late read of the node's advertisement asks for more work than was mined) the warning says the node most likely dropped the rating
-  unread (not proven), names `error.required` and `error.configured` when they are bit counts (0 to 255; anything else is not
-  echoed), and says one more attempt, with the user's explicit go-ahead, is reasonable once the server runs with `POW` at least
-  `error.required` (`POW` is read at startup); if that attempt is uncertain too, stop. This server never retries anything itself.
+- **FR-007**: An uncertain rating is never resent (the maintainer's ruling on issue #10, 2026-11-13, by rule 5 of `AGENTS.md`). After
+  an `uncertain` rating, a timeout, unreadable output or a CLI that started and then failed, no text the server gives an agent says
+  that another attempt is allowed, harmless, or the user's to approve: the warning, the instructions and the description say to never
+  call `rate_counterparty` again for that order and side, not even if the user asks. Why: mostrod versions differ in how they guard
+  against a duplicate rating. v0.18.0 (`rate_user.rs`) checks the order's side flag and then writes the score, with no conditional
+  claim; v0.20.2 claims the flag and writes the score in one transaction (`db.rs` `claim_order_rating_flag`). This server pins no node
+  version and adds no minimum, so it cannot promise that a second attempt would count once. For `uncertain` with `pow_required`
+  (published, then a late read of the node's advertisement asks for more work than was mined) the warning says the node most likely
+  dropped the rating unread (not proven) and names `error.required` and `error.configured` when they are bit counts (0 to 255;
+  anything else is not echoed), so the user can raise `POW` for future requests (`POW` is read at startup); it still does not let
+  this rating be sent again. This server never retries anything itself. Regression tests fail on any retry-permission phrase
+  (`RETRY_PERMISSIONS` in `src/server/tests.rs`) in the warnings, the instructions or the description.
 
 ## Slice
 
@@ -85,7 +86,14 @@ standalone module, conservative annotations and no extra confirmation parameter.
   started (`Error::IoAfterStart`) carries the rating's warning, a spawn failure does not; distinct chat `message_id`s kept.
 - [x] **5. Exact acknowledgement.** (2026-11-13) Only the tool's `ok` proves the exact rating (same order, same rating, checked by
   the CLI); a `rate-received` record in `list_messages` has no score, so it shows a rating was recorded, not which one.
-- [x] **6. Another attempt after an uncertain rating.** (2026-11-13) The blanket "never call it again for this order and side" is
-  replaced by FR-007, after checking mostrod v0.20.2's per-side claim; `uncertain` / `pow_required` names the bits and allows one
-  more attempt, with the user's go-ahead, once `POW` is raised. Regtest run for the first time: all ten tests pass, and the node's
-  database shows a second rating from the same side was not counted.
+- [x] **6. Another attempt after an uncertain rating.** (2026-11-13) **Superseded by slice 7: the retry it allowed is withdrawn.** The
+  blanket "never call it again for this order and side" was replaced after checking mostrod v0.20.2's per-side claim;
+  `uncertain` / `pow_required` named the bits and allowed one more attempt, with the user's go-ahead, once `POW` was raised. Regtest
+  run for the first time: all ten tests pass, and the node's database shows a second rating from the same side was not counted
+  (on v0.20.2 only).
+- [x] **7. Never resend (PR #16).** (2026-11-14) The maintainer ruled on issue #10 that an uncertain rating is never resent and that
+  no minimum mostrod version is added: rule 5 of `AGENTS.md` has no exception that holds only on some node versions, and a rating
+  counted twice would corrupt the counterparty's reputation. The user-approved retry, the
+  `pow_required` retry and the "harmless" and "can never count twice" claims are removed from the warnings, the instructions, the
+  description, the README and this spec (FR-003, FR-007). `uncertain` / `pow_required` still names the bits, for future requests.
+  Tests first: ten failed, then passed.

@@ -23,29 +23,24 @@ pub const UNCERTAIN_WARNING: &str = "UNCERTAIN: the request may have reached the
 Do NOT retry it. Check the current state first (get_order, list_messages), then decide.";
 
 /// The same for a rating, which no tool can read back: checking the state
-/// settles nothing, so the generic advice does not apply. mostrod v0.20.2
-/// claims a side's rating flag atomically (`claim_order_rating_flag`:
-/// `... AND buyer_sent_rate = 0`, in one transaction with the score), so a
-/// second rating from the same side is never counted; it is answered with
-/// the same silence. Another attempt is therefore harmless, and only the
-/// user decides on one.
+/// settles nothing, so the generic advice does not apply. An uncertain rating
+/// is never resent, whoever asks (the maintainer's ruling on issue #10, by
+/// rule 5 of AGENTS.md): mostrod versions differ in how they guard against a
+/// duplicate rating and this server pins none, so nothing here may promise
+/// that a second attempt counts once.
 pub const RATING_UNCERTAIN_WARNING: &str = "UNCERTAIN RATING: the rating may have been \
-sent, but whether it was recorded is unknown. Do not call rate_counterparty again on your \
-own. The node keeps at most one rating per side of an order and claims that side \
-atomically, so another attempt can never count twice, but it cannot change a rating \
-already recorded either, and the node answers a side that already rated, a counterparty \
-in full privacy and an order never taken with the same silence: another attempt is \
-harmless but usually pointless. Make one only if the user asks for it after hearing this. \
-get_order does not show ratings, and a missing `rate-received` message does not prove \
-the rating failed. Tell the user only what is known: the rating may have been sent, but \
-whether it was recorded is unknown.";
+sent, but whether it was recorded is unknown. Never call rate_counterparty again for this \
+order and side, not even if the user asks: this server cannot tell whether the node guards \
+against a duplicate rating. get_order does not show ratings, and a missing `rate-received` \
+message does not prove the rating failed. Tell the user only what is known: the rating may \
+have been sent, but whether it was recorded is unknown.";
 
 /// The rating's warning for `outcome`, read only for an `uncertain` one.
 /// `uncertain` with `pow_required` is the CLI saying it published with less
 /// work than the node advertises (a late read after the silence), so the node
-/// most likely dropped the rating unread: the warning says how much work to
-/// set before one more attempt. Every other outcome gets
-/// [`RATING_UNCERTAIN_WARNING`].
+/// most likely dropped the rating unread: the warning names the work so POW
+/// can be raised for future requests, and still never lets this rating be
+/// sent again. Every other outcome gets [`RATING_UNCERTAIN_WARNING`].
 pub fn rating_uncertain_warning(outcome: &Outcome) -> Cow<'static, str> {
     let error = outcome.document.get("error");
     if outcome.status != Status::Uncertain
@@ -79,14 +74,12 @@ pub fn rating_uncertain_warning(outcome: &Outcome) -> Cow<'static, str> {
     Cow::Owned(format!(
         "UNCERTAIN RATING, TOO LITTLE PROOF OF WORK: the rating was published with less \
          proof of work than the node asks for ({asked}). The node most likely dropped it \
-         unread, but that is not proven. Do not call rate_counterparty again on your own. \
-         Tell the user the proof of work was too low and how much the node requires. \
-         POW is read when this server starts: one more attempt is reasonable only once \
-         the server runs with {floor}, and only with the user's explicit go-ahead. The \
-         node keeps at most one rating per side of an order, so that attempt can never \
-         count twice. If that attempt is uncertain too, stop: tell the user the rating \
-         may have been sent, but whether it was recorded is unknown. get_order does not \
-         show ratings."
+         unread, but that is not proven. Never call rate_counterparty again for this order \
+         and side, not even if the user asks. Tell the user the rating may have been sent, \
+         but whether it was recorded is unknown, and that the proof of work was too low. \
+         To avoid this on future requests the user can run this server with {floor}; POW \
+         is read when this server starts. get_order does not show ratings, and a missing \
+         `rate-received` message does not prove the rating failed."
     ))
 }
 

@@ -666,15 +666,15 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
         "success",
         "a `rate` message is not needed",
         "MOSTRO_MCP_ALLOW_WRITES=true",
-        "never call rate_counterparty again on your own",
+        // An uncertain rating is never resent, and the user asking does not
+        // change that (maintainer's ruling on issue #10).
+        "never call rate_counterparty again for this order and side",
+        NEVER_RESENT_USER_ASKING,
         "may have been sent, but whether it was recorded is unknown",
-        // The node's per-side claim: a second rating can never count twice.
-        "never count twice",
-        "harmless but usually pointless",
-        "only when the user asks",
-        // Too little work: say how much, raise POW, then one more attempt.
+        // Too little work: say how much, so POW can be raised for future
+        // requests.
         "`error.required`",
-        "one more attempt",
+        "future requests",
         "cannot be known",
         "never taken",
         "full privacy",
@@ -691,11 +691,10 @@ fn rating_is_a_write_that_deletes_nothing_and_is_never_free_to_retry() {
         "Otherwise the node refuses",
         "the rating may be recorded",
         "it was sent and its outcome is unknown",
-        // The blanket ban the node's atomic per-side claim does not justify.
-        "never call rate_counterparty again for this order and side",
     ] {
         assert!(!description.contains(wrong), "{wrong}: {description}");
     }
+    assert_no_retry_permission("the rate_counterparty description", &description);
 }
 
 #[tokio::test]
@@ -768,8 +767,42 @@ async fn a_refused_rating_keeps_the_nodes_reason_without_the_warning() {
     );
 }
 
-/// The rating's own warning: no attempt on the agent's own, another one
-/// harmless but usually pointless, and nothing proves failure.
+/// What an uncertain rating is never told, in any text an agent reads: that
+/// another attempt is safe, harmless, or the user's to approve. The maintainer
+/// ruled on issue #10 (2026-11-13), by rule 5 of AGENTS.md, that an uncertain
+/// rating is never resent. mostrod versions differ in how they guard against
+/// a duplicate rating and this server pins none, so no text may promise that a
+/// second attempt counts once.
+const RETRY_PERMISSIONS: [&str; 12] = [
+    "harmless",
+    "never count twice",
+    "can never count",
+    "atomic",
+    "usually pointless",
+    "another attempt",
+    "one more attempt",
+    "second attempt",
+    "go-ahead",
+    "only when the user asks",
+    "only if the user asks",
+    "again on your own",
+];
+
+/// The rule itself, as each text words it: never again for the order and
+/// side, and the user's request does not change that.
+const NEVER_RESENT_USER_ASKING: &str = "not even if the user asks";
+
+fn assert_no_retry_permission(what: &str, text: &str) {
+    for permission in RETRY_PERMISSIONS {
+        assert!(
+            !text.contains(permission),
+            "{what} must not say `{permission}`: {text}"
+        );
+    }
+}
+
+/// The rating's own warning: never resend, whoever asks, and nothing proves
+/// failure.
 fn assert_rating_warning(body: &str) {
     use crate::outcome::{RATING_UNCERTAIN_WARNING, UNCERTAIN_WARNING};
     assert!(body.starts_with(RATING_UNCERTAIN_WARNING), "{body}");
@@ -779,24 +812,18 @@ fn assert_rating_warning(body: &str) {
     );
     for needle in [
         "may have been sent, but whether it was recorded is unknown",
-        "Do not call rate_counterparty again on your own",
-        "never count twice",
-        "harmless but usually pointless",
-        "only if the user asks for it",
+        "Never call rate_counterparty again for this order and side",
+        NEVER_RESENT_USER_ASKING,
         "get_order does not show ratings",
         "a missing `rate-received`",
         "only what is known",
     ] {
         assert!(RATING_UNCERTAIN_WARNING.contains(needle), "{needle}");
     }
-    for wrong in [
-        // An uncertain result does not prove the rating was published.
-        "it was sent and",
-        // The blanket ban the node's per-side claim does not justify.
-        "Never call rate_counterparty again for this order and side",
-    ] {
-        assert!(!RATING_UNCERTAIN_WARNING.contains(wrong), "{wrong}");
-    }
+    // An uncertain result does not prove the rating was published.
+    assert!(!RATING_UNCERTAIN_WARNING.contains("it was sent and"));
+    assert_no_retry_permission("the rating's warning", RATING_UNCERTAIN_WARNING);
+    assert_no_retry_permission("the rating's result", body);
 }
 
 /// The CLI's `uncertain` / `pow_required`: published, then silence, and a
@@ -823,8 +850,8 @@ fn pow_required(required: u8, configured: u8) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn an_uncertain_rating_short_of_work_names_the_bits_and_allows_one_attempt_after_pow_is_raised()
- {
+async fn an_uncertain_rating_short_of_work_names_the_bits_for_future_requests_and_is_never_resent()
+{
     let cli = Arc::new(FakeCli::answering(short_of_work(pow_required(22, 0))));
     let server = MostroServer::new(Arc::clone(&cli), true);
     let result = server.rate_counterparty(Parameters(rating(5))).await;
@@ -850,15 +877,18 @@ async fn an_uncertain_rating_short_of_work_names_the_bits_and_allows_one_attempt
         "this server's POW is 0",
         "most likely dropped it unread",
         "not proven",
-        "Do not call rate_counterparty again on your own",
+        // The bits are for future requests; this rating is not sent again.
+        "future requests",
         "POW set to at least 22",
-        "one more attempt",
-        "explicit go-ahead",
-        "never count twice",
-        "If that attempt is uncertain too, stop",
+        "Never call rate_counterparty again for this order and side",
+        NEVER_RESENT_USER_ASKING,
+        "may have been sent, but whether it was recorded is unknown",
+        "get_order does not show ratings",
+        "a missing `rate-received`",
     ] {
         assert!(body.contains(needle), "{needle}: {body}");
     }
+    assert_no_retry_permission("the proof-of-work warning", &body);
     // Only the CLI ran, once: nothing is retried by the server.
     assert_eq!(cli.calls.lock().unwrap().len(), 1);
 }
@@ -890,6 +920,12 @@ async fn an_uncertain_rating_short_of_work_without_numbers_names_no_bits() {
             !warning.contains("bits; this server's POW"),
             "{error}: {warning}"
         );
+        // Whatever the CLI reports, this rating is not sent again.
+        assert!(
+            warning.contains("Never call rate_counterparty again for this order and side"),
+            "{error}: {warning}"
+        );
+        assert_no_retry_permission("the proof-of-work warning", warning);
     }
 }
 
@@ -1137,18 +1173,18 @@ fn the_instructions_end_a_trade_with_the_users_own_rating() {
         "the seller at `settled-hold-invoice`",
         "get_order does not show whether a side already rated",
         "rate-received",
-        // After an uncertain rating: no attempt on the agent's own; the
-        // node's per-side claim makes another one harmless, so the user may
-        // ask for one, and too little work says how much to set first.
-        "never call rate_counterparty again on your own",
-        "never count twice",
-        "only when the user asks",
+        // After an uncertain rating: never again for the order and side, not
+        // even at the user's request; too little work says how much POW to
+        // set for future requests.
+        "never call rate_counterparty again for that order and side",
+        NEVER_RESENT_USER_ASKING,
         "`error.required`",
+        "future requests",
     ] {
         assert!(INSTRUCTIONS.contains(needle), "{needle}");
     }
     assert!(!INSTRUCTIONS.contains("no reason to rate"));
-    assert!(!INSTRUCTIONS.contains("never call rate_counterparty again for that order and side"));
+    assert_no_retry_permission("the server instructions", INSTRUCTIONS);
 }
 
 /// What proves the exact rating, and what does not. The server passes the

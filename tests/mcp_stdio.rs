@@ -739,15 +739,23 @@ async fn the_cli_s_rating_outcomes_reach_the_agent_intact() {
     let body = text(&uncertain);
     assert!(body.starts_with("UNCERTAIN RATING"), "{body}");
     assert!(
-        body.contains("Do not call rate_counterparty again on your own")
-            && body.contains("harmless but usually pointless")
+        body.contains("Never call rate_counterparty again for this order and side")
+            && body.contains("not even if the user asks")
             && body.contains("may have been sent, but whether it was recorded is unknown"),
         "{body}"
     );
-    assert!(
-        !body.contains("Never call rate_counterparty again for this order and side"),
-        "{body}"
-    );
+    // No text tells the agent another attempt is allowed or harmless.
+    for permission in [
+        "harmless",
+        "usually pointless",
+        "another attempt",
+        "one more attempt",
+        "go-ahead",
+        "never count twice",
+        "again on your own",
+    ] {
+        assert!(!body.contains(permission), "{permission}: {body}");
+    }
 
     // `uncertain` / `pow_required` (no CLI example exists; this is the
     // uncertain example with the error the CLI builds for it).
@@ -771,9 +779,19 @@ async fn the_cli_s_rating_outcomes_reach_the_agent_intact() {
     assert!(
         body.starts_with("UNCERTAIN RATING, TOO LITTLE PROOF OF WORK")
             && body.contains("the node requires 22 bits")
-            && body.contains("one more attempt"),
+            && body.contains("future requests")
+            && body.contains("Never call rate_counterparty again for this order and side")
+            && body.contains("not even if the user asks"),
         "{body}"
     );
+    for permission in [
+        "one more attempt",
+        "another attempt",
+        "go-ahead",
+        "harmless",
+    ] {
+        assert!(!body.contains(permission), "{permission}: {body}");
+    }
     client.cancel().await.unwrap();
 }
 

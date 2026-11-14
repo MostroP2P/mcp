@@ -616,7 +616,10 @@ async fn both_sides_rate_a_finished_trade_once_and_a_running_one_is_refused() {
         assert_eq!(rated["data"]["rating"], rating, "{rated}");
     }
 
-    // A second rating from the same side gets no answer: uncertain, never ok.
+    // Test only, against the pinned mostrod v0.20.2: a second rating from the
+    // same side gets no answer, so uncertain and never ok. An agent never sends
+    // one: an uncertain rating is never resent, and older nodes may not guard
+    // against the duplicate.
     let (again, error) = call(
         &alice,
         "rate_counterparty",
