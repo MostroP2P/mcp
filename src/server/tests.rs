@@ -21,6 +21,10 @@ use crate::tools::{
 struct FakeCli {
     node: crate::nodes::NodeSelection,
     calls: Mutex<Vec<Vec<String>>>,
+    /// The node key each run went to, read when the run started.
+    ran_on: Mutex<Vec<String>>,
+    /// Held by a test to keep a run in flight.
+    gate: tokio::sync::Mutex<()>,
     waits: Mutex<Vec<std::time::Duration>>,
     reply: fn() -> MostroResult<CliRun>,
 }
@@ -32,6 +36,8 @@ impl FakeCli {
                 crate::nodes::default_node(),
             )),
             calls: Mutex::new(Vec::new()),
+            ran_on: Mutex::new(Vec::new()),
+            gate: tokio::sync::Mutex::new(()),
             waits: Mutex::new(Vec::new()),
             reply,
         }
@@ -49,7 +55,9 @@ impl CliRunner for Arc<FakeCli> {
         extra: std::time::Duration,
     ) -> MostroResult<CliRun> {
         self.calls.lock().unwrap().push(args);
+        self.ran_on.lock().unwrap().push(self.node.current().pubkey);
         self.waits.lock().unwrap().push(extra);
+        drop(self.gate.lock().await);
         (self.reply)()
     }
 }
@@ -733,4 +741,101 @@ async fn selecting_the_node_already_in_use_checks_nothing() {
     let result = server.select_node(select("global", false)).await;
     assert_ne!(result.is_error, Some(true), "{}", text_of(&result));
     assert!(cli.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn results_name_the_node_once_the_user_switched() {
+    let (server, _cli) = server(false);
+    let before = server
+        .list_orders(Parameters(ListOrdersParams::default()))
+        .await;
+    assert_eq!(before.content.len(), 1, "no node line before a switch");
+
+    server.select_node(select("argentina", false)).await;
+    let after = server
+        .list_orders(Parameters(ListOrdersParams::default()))
+        .await;
+    let node_line = after
+        .content
+        .last()
+        .unwrap()
+        .as_text()
+        .unwrap()
+        .text
+        .clone();
+    assert!(node_line.contains("MostrAR"), "{node_line}");
+    assert!(node_line.contains("argentina"), "{node_line}");
+    // The first block is still the CLI's document, unchanged.
+    let document: serde_json::Value =
+        serde_json::from_str(&after.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(document, after.structured_content.unwrap());
+}
+
+async fn wait_for_runs(cli: &FakeCli, runs: usize) {
+    for _ in 0..200 {
+        if cli.calls.lock().unwrap().len() >= runs {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("expected {runs} runs");
+}
+
+#[tokio::test]
+async fn a_switch_waits_for_the_run_in_flight_to_finish_on_the_old_node() {
+    let (server, cli) = server(false);
+    let held = cli.gate.lock().await;
+    let run = tokio::spawn({
+        let server = server.clone();
+        async move {
+            server
+                .list_orders(Parameters(ListOrdersParams::default()))
+                .await
+        }
+    });
+    wait_for_runs(&cli, 1).await;
+    let switch = tokio::spawn({
+        let server = server.clone();
+        async move { server.select_node(select("argentina", true)).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let global = crate::nodes::default_node().pubkey;
+    assert_eq!(cli.node.current().pubkey, global, "the switch waited");
+
+    drop(held);
+    run.await.unwrap();
+    switch.await.unwrap();
+    assert_eq!(*cli.ran_on.lock().unwrap(), [global]);
+    assert_eq!(
+        cli.node.current().pubkey,
+        crate::nodes::by_id("argentina").unwrap().pubkey
+    );
+}
+
+#[tokio::test]
+async fn no_tool_runs_between_the_open_order_check_and_the_switch() {
+    let (server, cli) = server(false);
+    let held = cli.gate.lock().await;
+    let switch = tokio::spawn({
+        let server = server.clone();
+        async move { server.select_node(select("mexico", false)).await }
+    });
+    wait_for_runs(&cli, 1).await;
+    let run = tokio::spawn({
+        let server = server.clone();
+        async move {
+            server
+                .list_orders(Parameters(ListOrdersParams::default()))
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(cli.calls.lock().unwrap().len(), 1, "the tool waited");
+
+    drop(held);
+    switch.await.unwrap();
+    run.await.unwrap();
+    let mexico = crate::nodes::by_id("mexico").unwrap().pubkey;
+    let global = crate::nodes::default_node().pubkey;
+    assert_eq!(*cli.ran_on.lock().unwrap(), [global, mexico]);
 }

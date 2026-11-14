@@ -169,13 +169,17 @@ Native Linux, Docker 29.9, on `main` after `99d74d6`, mostrod `v0.20.2`, mostro-
   after the user confirms). Not behind the write gate: it changes no order. The selection is shared with the CLI backend, so every
   later run gets the new `MOSTRO_PUBKEY` and `RELAYS`. A server-side lock makes the open-order check and the switch one step: runs in
   flight finish on the old node first and calls that arrive later run on the new one (found by the review: the check and the switch were
-  separate). Selecting the node already in use checks nothing.
+  separate). Selecting the node already in use checks nothing. After the first switch, every CLI result gets a last text block naming
+  the node it ran against (catalog name, id and region), read under the same lock; the first block and the structured content stay the
+  CLI's document (added after CodeRabbit's review: the issue asks for it and `read_chat` / `send_chat` carry no `node_pubkey`).
 - **Tests**: written first and run red for the configuration and the server tools. Unit: the catalog (ids, Global's exact key and
   relays, hex keys, the Mostro relay first, unique ids and keys), lookups by id and by hex or npub, the bech32 checksum, open versus
   finished statuses, the configuration defaults and overrides, and the backend handing the selected node to the next command. Server:
   `list_nodes` runs no CLI, an unknown node is refused without a run, a switch with no open orders, a refusal that names the open orders,
-  a refusal when the store is unreadable, `leave_open_orders`, and a no-op switch. The lock itself has no test. Stdio: eighteen tools, the CLI run against Mostro Global with nothing
-  configured, every run after `select_node` going to the selected node, a refused switch keeping the node, and an empty `MOSTRO_PUBKEY`
+  a refusal when the store is unreadable, `leave_open_orders`, a no-op switch, the node line appearing only after a switch, and the
+  lock (a gated fake run: a switch waits for the run in flight, and a tool waits for the open-order check and runs on the new node; both
+  tests fail with the lock removed). Stdio: eighteen tools, the CLI run against Mostro Global with nothing
+  configured, every run after `select_node` going to the selected node and naming it, a refused switch keeping the node, and an empty `MOSTRO_PUBKEY`
   stopping the server with nothing on stdout.
 - **Live check** (mainnet, read-only, mostro-cli 0.17.1, a temporary `MCLI_DIR`): with no node configured, `list_orders` returned
   Mostro Global's USD book and the log showed `node_source=Default relays_source=Default`. `select_node` against a live node was not run:

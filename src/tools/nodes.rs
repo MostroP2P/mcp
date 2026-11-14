@@ -69,6 +69,14 @@ pub fn catalog(current: &NodeTarget) -> Value {
     json!({ "nodes": nodes, "current": describe_target(current) })
 }
 
+/// The line that names the node a result came from.
+pub fn label(target: &NodeTarget) -> String {
+    match target.catalog_node() {
+        Some(node) => format!("Node: {} (`{}`, {})", node.name, node.id, node.region),
+        None => format!("Node: {} (outside the trusted catalog)", target.pubkey),
+    }
+}
+
 /// Statuses after which an order needs nothing more from its node.
 const FINISHED: &[&str] = &[
     "success",
@@ -151,6 +159,17 @@ mod tests {
                 .iter()
                 .all(|node| node["in_use"] == false)
         );
+    }
+
+    #[test]
+    fn the_label_names_a_catalog_node_and_keys_any_other() {
+        let argentina = NodeTarget::of(by_id("argentina").unwrap());
+        assert!(label(&argentina).contains("MostrAR (`argentina`"));
+        let custom = NodeTarget {
+            pubkey: "ab".repeat(32),
+            relays: vec!["ws://localhost:7000".into()],
+        };
+        assert!(label(&custom).contains(&"ab".repeat(32)));
     }
 
     #[test]

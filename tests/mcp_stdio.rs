@@ -865,7 +865,14 @@ async fn after_select_node_every_run_goes_to_the_selected_node() {
     let selected = call(&client, "select_node", json!({"node": "argentina"})).await;
     assert_ne!(selected.is_error, Some(true), "{}", text(&selected));
 
-    let (node, relays) = echoed_node(&call(&client, "list_orders", json!({})).await);
+    let listed_orders = call(&client, "list_orders", json!({})).await;
+    let named = listed_orders.content.last().unwrap().as_text().unwrap();
+    assert!(
+        named.text.contains("MostrAR (`argentina`"),
+        "{}",
+        named.text
+    );
+    let (node, relays) = echoed_node(&listed_orders);
     assert_eq!(node, ARGENTINA);
     assert!(
         relays.starts_with("wss://relay.mostro.network,"),
