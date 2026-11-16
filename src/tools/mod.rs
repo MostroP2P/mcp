@@ -13,7 +13,7 @@ pub mod get_order;
 pub mod list_messages;
 pub mod list_my_orders;
 pub mod list_orders;
-pub mod rate_counterparty;
+
 pub mod sync_orders;
 pub mod take_order;
 pub mod trade_step;
@@ -53,13 +53,15 @@ pub(crate) fn flag(name: &str, value: impl Display) -> String {
 /// many route hints.
 const MAX_INVOICE_CHARS: usize = 4096;
 
-/// A fiat currency code: 3 to 5 ASCII letters, returned uppercase.
+/// A fiat currency code: 3 to 5 ASCII letters, returned uppercase. Like every
+/// validation error, the refusal does not repeat the value: a key pasted into
+/// the wrong field must not come back out.
 pub(crate) fn fiat_code(field: &'static str, code: &str) -> Result<String> {
     let code = code.trim();
     if !(3..=5).contains(&code.len()) || !code.chars().all(|c| c.is_ascii_alphabetic()) {
         return Err(invalid(
             field,
-            format!("`{code}` is not a fiat currency code (3 to 5 letters, e.g. USD)"),
+            "not a fiat currency code (3 to 5 letters, e.g. USD)",
         ));
     }
     Ok(code.to_ascii_uppercase())
@@ -69,7 +71,7 @@ pub(crate) fn fiat_code(field: &'static str, code: &str) -> Result<String> {
 pub(crate) fn order_id(field: &'static str, id: &str) -> Result<String> {
     uuid::Uuid::parse_str(id.trim())
         .map(|uuid| uuid.hyphenated().to_string())
-        .map_err(|_| invalid(field, format!("`{id}` is not an order id (a UUID)")))
+        .map_err(|_| invalid(field, "not an order id (a UUID)"))
 }
 
 /// Free text such as a payment method: trimmed, non-empty, at most `max`
@@ -154,6 +156,20 @@ pub(crate) fn positive(field: &'static str, amount: u64) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_currency_or_order_id_is_not_echoed_so_a_pasted_key_cannot_leak() {
+        let nsec = format!("nsec1{}", "q".repeat(58));
+        let hex = "cd".repeat(32);
+        for secret in [nsec.as_str(), hex.as_str()] {
+            let currency = fiat_code("currency", secret).unwrap_err().to_string();
+            assert!(!currency.contains(secret), "{currency}");
+            assert!(currency.contains("fiat currency code"), "{currency}");
+            let order = order_id("order_id", secret).unwrap_err().to_string();
+            assert!(!order.contains(secret), "{order}");
+            assert!(order.contains("order id"), "{order}");
+        }
+    }
 
     #[test]
     fn fiat_codes_are_uppercased_and_must_be_letters() {

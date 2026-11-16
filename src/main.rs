@@ -45,7 +45,10 @@ async fn serve() -> anyhow::Result<()> {
     tracing::info!(
         cli = %config.cli_path.display(),
         node = %config.mostro_pubkey,
+        node_name = mostro_mcp::nodes::by_pubkey(&config.mostro_pubkey).map_or("outside the trusted catalog", |node| node.name),
+        node_source = ?config.node_source,
         relays = ?config.relays,
+        relays_source = ?config.relays_source,
         writes = config.allow_writes,
         version = env!("CARGO_PKG_VERSION"),
         pid = std::process::id(),

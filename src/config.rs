@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::{Error, Result};
+use crate::nodes;
 
 pub const DEFAULT_CLI: &str = "mostro-cli";
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -18,14 +19,27 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// first and lose that report.
 pub const MIN_TIMEOUT_SECS: u64 = 30;
 
+/// Where a node setting came from, for the startup log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The trusted node catalog: Mostro Global, or a catalog node's relays.
+    Default,
+    /// The environment variable.
+    Environment,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// `MOSTRO_CLI_PATH`; `mostro-cli` from `$PATH` when unset.
     pub cli_path: PathBuf,
-    /// `MOSTRO_PUBKEY`: the node to trade on, hex or npub.
+    /// `MOSTRO_PUBKEY`: the node to trade on, hex or npub; Mostro Global
+    /// when unset.
     pub mostro_pubkey: String,
-    /// `RELAYS`: comma-separated `ws://` / `wss://` URLs.
+    pub node_source: Source,
+    /// `RELAYS`: comma-separated `ws://` / `wss://` URLs; the catalog relays
+    /// of the node when unset.
     pub relays: Vec<String>,
+    pub relays_source: Source,
     /// `POW`: proof-of-work bits to put on outgoing events.
     pub pow: Option<u32>,
     /// `TRANSPORT`: passed through to the CLI, which validates it.
@@ -52,35 +66,8 @@ impl Config {
                 .filter(|value| !value.is_empty())
         };
 
-        let mostro_pubkey = get("MOSTRO_PUBKEY").ok_or_else(|| {
-            config_error("MOSTRO_PUBKEY is required: the Mostro node's public key (hex or npub)")
-        })?;
-        if !is_public_key(&mostro_pubkey) {
-            return Err(config_error(format!(
-                "MOSTRO_PUBKEY `{mostro_pubkey}` is not a hex or npub public key"
-            )));
-        }
-
-        let relays: Vec<String> = get("RELAYS")
-            .ok_or_else(|| {
-                config_error("RELAYS is required: comma-separated ws:// or wss:// URLs")
-            })?
-            .split(',')
-            .map(str::trim)
-            .filter(|relay| !relay.is_empty())
-            .map(String::from)
-            .collect();
-        if let Some(bad) = relays
-            .iter()
-            .find(|relay| !relay.starts_with("ws://") && !relay.starts_with("wss://"))
-        {
-            return Err(config_error(format!(
-                "relay `{bad}` is not a ws:// or wss:// URL"
-            )));
-        }
-        if relays.is_empty() {
-            return Err(config_error("RELAYS lists no relay"));
-        }
+        let (mostro_pubkey, node_source) = node_key(&lookup)?;
+        let (relays, relays_source) = node_relays(&lookup, &mostro_pubkey)?;
 
         let pow = get("POW")
             .map(|value| {
@@ -117,7 +104,9 @@ impl Config {
         Ok(Self {
             cli_path: PathBuf::from(get("MOSTRO_CLI_PATH").unwrap_or_else(|| DEFAULT_CLI.into())),
             mostro_pubkey,
+            node_source,
             relays,
+            relays_source,
             pow,
             transport: get("TRANSPORT"),
             mcli_dir: get("MCLI_DIR").map(PathBuf::from),
@@ -125,6 +114,72 @@ impl Config {
             timeout: Duration::from_secs(timeout_secs),
         })
     }
+}
+
+/// `MOSTRO_PUBKEY`, or Mostro Global when it is unset. Set but blank is an
+/// error: an operator who wrote the variable meant a node, and silently
+/// trading on another would be worse than not starting.
+fn node_key(lookup: &impl Fn(&str) -> Option<String>) -> Result<(String, Source)> {
+    let Some(raw) = lookup("MOSTRO_PUBKEY") else {
+        return Ok((nodes::default_node().pubkey.to_string(), Source::Default));
+    };
+    let key = raw.trim();
+    if key.is_empty() {
+        return Err(config_error(
+            "MOSTRO_PUBKEY is set but empty: unset it to use Mostro Global, or give a \
+             node's public key (hex or npub)",
+        ));
+    }
+    if !is_public_key(key) {
+        return Err(config_error(format!(
+            "MOSTRO_PUBKEY `{key}` is not a hex or npub public key"
+        )));
+    }
+    Ok((key.to_string(), Source::Environment))
+}
+
+/// `RELAYS`, or the catalog relays of `node` when it is unset. A node outside
+/// the catalog has no known relays, so it needs the variable.
+fn node_relays(
+    lookup: &impl Fn(&str) -> Option<String>,
+    node: &str,
+) -> Result<(Vec<String>, Source)> {
+    let Some(raw) = lookup("RELAYS") else {
+        return match nodes::by_pubkey(node) {
+            Some(trusted) => Ok((
+                trusted
+                    .relays
+                    .iter()
+                    .map(|relay| relay.to_string())
+                    .collect(),
+                Source::Default,
+            )),
+            None => Err(config_error(
+                "RELAYS is required for a node outside the trusted catalog: \
+                 comma-separated ws:// or wss:// URLs",
+            )),
+        };
+    };
+    let relays: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|relay| !relay.is_empty())
+        .map(String::from)
+        .collect();
+    if let Some(bad) = relays
+        .iter()
+        .find(|relay| !relay.starts_with("ws://") && !relay.starts_with("wss://"))
+    {
+        return Err(config_error(format!(
+            "relay `{bad}` is not a ws:// or wss:// URL"
+        )));
+    }
+    if relays.is_empty() {
+        return Err(config_error(
+            "RELAYS is set but lists no relay: unset it to use the node's catalog relays",
+        ));
+    }
+    Ok((relays, Source::Environment))
 }
 
 fn config_error(message: impl Into<String>) -> Error {
@@ -186,9 +241,59 @@ mod tests {
     }
 
     #[test]
-    fn the_node_and_relays_are_required() {
-        assert!(load(&[("RELAYS", "ws://localhost:7000")]).is_err());
-        assert!(load(&[("MOSTRO_PUBKEY", HEX)]).is_err());
+    fn with_nothing_set_the_node_is_mostro_global_and_its_relays() {
+        let config = load(&[]).unwrap();
+        assert_eq!(
+            config.mostro_pubkey,
+            "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390"
+        );
+        assert_eq!(
+            config.relays,
+            [
+                "wss://relay.mostro.network",
+                "wss://mostro-p2p.tech",
+                "wss://relay.shadowbip.com"
+            ]
+        );
+        assert_eq!(config.node_source, Source::Default);
+        assert_eq!(config.relays_source, Source::Default);
+        assert!(!config.allow_writes);
+    }
+
+    #[test]
+    fn the_relays_alone_can_be_overridden() {
+        let config = load(&[("RELAYS", "ws://localhost:7000")]).unwrap();
+        assert_eq!(config.mostro_pubkey, crate::nodes::default_node().pubkey);
+        assert_eq!(config.relays, ["ws://localhost:7000"]);
+        assert_eq!(config.node_source, Source::Default);
+        assert_eq!(config.relays_source, Source::Environment);
+    }
+
+    #[test]
+    fn a_catalog_node_alone_brings_its_own_relays() {
+        let argentina = crate::nodes::by_id("argentina").unwrap();
+        let config = load(&[("MOSTRO_PUBKEY", argentina.pubkey)]).unwrap();
+        assert_eq!(config.relays, argentina.relays);
+        assert_eq!(config.node_source, Source::Environment);
+        assert_eq!(config.relays_source, Source::Default);
+    }
+
+    #[test]
+    fn a_node_outside_the_catalog_needs_its_relays() {
+        let error = load(&[("MOSTRO_PUBKEY", HEX)]).unwrap_err().to_string();
+        assert!(error.contains("RELAYS"), "{error}");
+    }
+
+    #[test]
+    fn an_explicitly_empty_node_or_relay_list_is_an_error_not_a_default() {
+        for (key, value) in [
+            ("MOSTRO_PUBKEY", ""),
+            ("MOSTRO_PUBKEY", "   "),
+            ("RELAYS", ""),
+            ("RELAYS", " , "),
+        ] {
+            assert!(load(&[(key, value)]).is_err(), "{key}={value:?}");
+        }
     }
 
     #[test]
