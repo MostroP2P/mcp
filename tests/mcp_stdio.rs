@@ -109,7 +109,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 #[tokio::test]
-
+async fn a_client_discovers_nineteen_typed_tools() {
     let dir = tempfile::tempdir().unwrap();
     let client = connect(&fake_cli(&dir), false).await;
 
@@ -133,7 +133,9 @@ fn text(result: &CallToolResult) -> String {
         "watch_order",
         "read_chat",
         "open_dispute",
-
+        "list_nodes",
+        "select_node",
+        "rate_counterparty",
     ] {
         assert!(
             instructions.contains(reference),
@@ -351,7 +353,7 @@ async fn output_that_is_not_a_document_is_a_tool_error_and_the_server_keeps_serv
         "{}",
         text(&result)
     );
-
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 19);
     client.cancel().await.unwrap();
 }
 
@@ -430,7 +432,7 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
     assert!(text(&result).contains("not an order id"));
 
     // The server is still serving afterwards.
-
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 19);
     client.cancel().await.unwrap();
 }
 

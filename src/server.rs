@@ -25,7 +25,8 @@ use crate::tools::{
     list_messages::{self, ListMessagesParams},
     list_my_orders,
     list_orders::{self, ListOrdersParams},
-
+    nodes::{self as node_tools, SelectNodeParams},
+    rate_counterparty::{self, RateCounterpartyParams},
     sync_orders::{self, SyncOrdersParams},
     take_order::{self, TakeOrderParams},
     trade_step::{self, OrderStepParams, ReleaseParams},
@@ -670,7 +671,7 @@ impl<R: CliRunner> MostroServer<R> {
             Err(error) => return self.named(tool_error(&error)),
         };
         let _shared = self.switch.read().await;
-        let result = self.run_on_current_node(args, may_reach_node, extra).await;
+        let result = self.run_on_current_node(args, reach, extra).await;
         self.named(result)
     }
 
@@ -689,7 +690,7 @@ impl<R: CliRunner> MostroServer<R> {
     async fn run_on_current_node(
         &self,
         args: Vec<String>,
-        may_reach_node: bool,
+        reach: Reach,
         extra: Duration,
     ) -> CallToolResult {
         // `order list`, not just `order`: the log must say which command ran.
