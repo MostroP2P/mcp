@@ -69,6 +69,8 @@ Sources of truth:
 | `regtest/` | The local regtest network (bitcoind, LND, relay, mostrod) and `devenv.sh` |
 | `examples/mcp_call.rs` | Calls one tool from the command line, for manual testing |
 | `docs/TEST_SUMMARY.md` | What has been verified, and against what |
+| `.github/workflows/ci.yml` | Formats, lints, tests and checks the Windows target on every pull request and push to `main` |
+| `.github/workflows/ci.yml` | Formats, lints, tests and checks the Windows target on every pull request and push to `main` |
 | `.github/workflows/release.yml` | Builds and publishes the release packages from a version tag |
 
 ## Commands
