@@ -21,7 +21,7 @@ const READ: [&str; 6] = [
 ];
 
 /// The canonical commands the state-changing tools need.
-const WRITE: [&str; 10] = [
+const WRITE: [&str; 11] = [
     "order.new",
     "order.take-sell",
     "order.take-buy",
@@ -32,6 +32,7 @@ const WRITE: [&str; 10] = [
     "order.cancel",
     "order.sync",
     "dispute.open",
+    "order.rate",
 ];
 
 /// The commands the enabled tools need: the reads always, the writes only on a
@@ -190,6 +191,7 @@ mod tests {
             "order.release",
             "order.cancel",
             "order.sync",
+            "order.rate",
         ] {
             assert!(required(true).contains(&write), "{write}");
         }

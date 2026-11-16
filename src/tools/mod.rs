@@ -14,6 +14,7 @@ pub mod list_messages;
 pub mod list_my_orders;
 pub mod list_orders;
 pub mod nodes;
+pub mod rate_counterparty;
 pub mod sync_orders;
 pub mod take_order;
 pub mod trade_step;
