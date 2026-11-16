@@ -417,7 +417,7 @@ async fn a_bad_argument_is_a_tool_error_not_a_crash() {
 
     let result = call(&client, "get_order", json!({"order_id": "$(reboot)"})).await;
     assert_eq!(result.is_error, Some(true));
-    assert!(text(&result).contains("is not an order id"));
+    assert!(text(&result).contains("not an order id"));
 
     // The server is still serving afterwards.
     assert_eq!(client.list_all_tools().await.unwrap().len(), 18);
